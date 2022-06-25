@@ -27,6 +27,7 @@
 #include "wmm.h"
 #include "11n.h"
 #include "pcie.h"
+#include "pcie_quirks.h"
 
 #define PCIE_VERSION	"1.0"
 #define DRV_NAME        "Marvell mwifiex PCIe"
@@ -86,6 +87,12 @@ static int mwifiex_write_reg(struct mwifiex_adapter *adapter, int reg, u32 data)
 	struct pcie_service_card *card = adapter->card;
 
 	iowrite32(data, card->pci_mmap1 + reg);
+
+	/* Do a read-back, which makes the write non-posted, ensuring the
+	 * completion before returning.
+	 * The firmware of the 88W8897 card is buggy and this avoids crashes.
+	 */
+	ioread32(card->pci_mmap1 + reg);
 
 	return 0;
 }
@@ -150,10 +157,8 @@ static bool mwifiex_pcie_ok_to_access_hw(struct mwifiex_adapter *adapter)
 static int mwifiex_pcie_suspend(struct device *dev)
 {
 	struct mwifiex_adapter *adapter;
-	struct pcie_service_card *card;
-	struct pci_dev *pdev = to_pci_dev(dev);
+	struct pcie_service_card *card = dev_get_drvdata(dev);
 
-	card = pci_get_drvdata(pdev);
 
 	/* Might still be loading firmware */
 	wait_for_completion(&card->fw_done);
@@ -195,10 +200,8 @@ static int mwifiex_pcie_suspend(struct device *dev)
 static int mwifiex_pcie_resume(struct device *dev)
 {
 	struct mwifiex_adapter *adapter;
-	struct pcie_service_card *card;
-	struct pci_dev *pdev = to_pci_dev(dev);
+	struct pcie_service_card *card = dev_get_drvdata(dev);
 
-	card = pci_get_drvdata(pdev);
 
 	if (!card->adapter) {
 		dev_err(dev, "adapter structure is not valid\n");
@@ -233,6 +236,7 @@ static int mwifiex_pcie_probe(struct pci_dev *pdev,
 					const struct pci_device_id *ent)
 {
 	struct pcie_service_card *card;
+	struct pci_dev *parent_pdev = pci_upstream_bridge(pdev);
 	int ret;
 
 	pr_debug("info: vendor=0x%4.04X device=0x%4.04X rev=%d\n",
@@ -265,11 +269,20 @@ static int mwifiex_pcie_probe(struct pci_dev *pdev,
 			return ret;
 	}
 
+	/* check quirks */
+	mwifiex_initialize_quirks(card);
+
 	if (mwifiex_add_card(card, &card->fw_done, &pcie_ops,
 			     MWIFIEX_PCIE, &pdev->dev)) {
 		pr_err("%s failed\n", __func__);
 		return -1;
 	}
+
+	/* disable bridge_d3 for Surface gen4+ devices to fix fw crashing
+	 * after suspend
+	 */
+	if (card->quirks & QUIRK_NO_BRIDGE_D3)
+		parent_pdev->bridge_d3 = false;
 
 	return 0;
 }
@@ -380,6 +393,13 @@ static void mwifiex_pcie_reset_prepare(struct pci_dev *pdev)
 	mwifiex_shutdown_sw(adapter);
 	clear_bit(MWIFIEX_IFACE_WORK_DEVICE_DUMP, &card->work_flags);
 	clear_bit(MWIFIEX_IFACE_WORK_CARD_RESET, &card->work_flags);
+
+	/* For Surface gen4+ devices, we need to put wifi into D3cold right
+	 * before performing FLR
+	 */
+	if (card->quirks & QUIRK_FW_RST_D3COLD)
+		mwifiex_pcie_reset_d3cold_quirk(pdev);
+
 	mwifiex_dbg(adapter, INFO, "%s, successful\n", __func__);
 
 	card->pci_reset_ongoing = true;
@@ -498,6 +518,7 @@ static int mwifiex_pm_wakeup_card(struct mwifiex_adapter *adapter)
 {
 	struct pcie_service_card *card = adapter->card;
 	const struct mwifiex_pcie_card_reg *reg = card->pcie.reg;
+	int n_tries = 0;
 
 	mwifiex_dbg(adapter, EVENT,
 		    "event: Wakeup device...\n");
@@ -505,12 +526,28 @@ static int mwifiex_pm_wakeup_card(struct mwifiex_adapter *adapter)
 	if (reg->sleep_cookie)
 		mwifiex_pcie_dev_wakeup_delay(adapter);
 
-	/* Accessing fw_status register will wakeup device */
-	if (mwifiex_write_reg(adapter, reg->fw_status, FIRMWARE_READY_PCIE)) {
-		mwifiex_dbg(adapter, ERROR,
-			    "Writing fw_status register failed\n");
-		return -1;
-	}
+	/* Access the fw_status register to wake up the device.
+	 * Since the 88W8897 firmware sometimes appears to ignore or miss
+	 * that wakeup request, we continue trying until we receive an
+	 * interrupt from the card.
+	 */
+	do {
+		if (mwifiex_write_reg(adapter, reg->fw_status, FIRMWARE_READY_PCIE)) {
+			mwifiex_dbg(adapter, ERROR,
+				    "Writing fw_status register failed\n");
+			return -1;
+		}
+
+		n_tries++;
+
+		if (n_tries <= 15)
+			usleep_range(400, 700);
+		else
+			msleep(10);
+	} while (n_tries <= 50 && READ_ONCE(adapter->int_status) == 0);
+
+	mwifiex_dbg(adapter, EVENT,
+		    "event: Tried %d times until firmware woke up\n", n_tries);
 
 	if (reg->sleep_cookie) {
 		mwifiex_pcie_dev_wakeup_delay(adapter);
@@ -1596,8 +1633,20 @@ mwifiex_pcie_send_boot_cmd(struct mwifiex_adapter *adapter, struct sk_buff *skb)
 static int mwifiex_pcie_init_fw_port(struct mwifiex_adapter *adapter)
 {
 	struct pcie_service_card *card = adapter->card;
+	struct pci_dev *pdev = card->dev;
+	struct pci_dev *parent_pdev = pci_upstream_bridge(pdev);
 	const struct mwifiex_pcie_card_reg *reg = card->pcie.reg;
 	int tx_wrap = card->txbd_wrptr & reg->tx_wrap_mask;
+
+	/* Trigger a function level reset of the PCI bridge device, this makes
+	 * the firmware of PCIe 88W8897 cards stop reporting a fixed LTR value
+	 * that prevents the system from entering package C10 and S0ix powersaving
+	 * states.
+	 * We need to do it here because it must happen after firmware
+	 * initialization and this function is called after that is done.
+	 */
+	if (card->quirks & QUIRK_DO_FLR_ON_BRIDGE)
+		pci_reset_function(parent_pdev);
 
 	/* Write the RX ring read pointer in to reg->rx_rdptr */
 	if (mwifiex_write_reg(adapter, reg->rx_rdptr, card->rxbd_rdptr |
@@ -2815,6 +2864,16 @@ static void mwifiex_pcie_device_dump_work(struct mwifiex_adapter *adapter)
 static void mwifiex_pcie_card_reset_work(struct mwifiex_adapter *adapter)
 {
 	struct pcie_service_card *card = adapter->card;
+
+	/* On Surface 3, reset_wsid method removes then re-probes card by
+	 * itself. So, need to place it here and skip performing any other
+	 * reset-related works.
+	 */
+	if (card->quirks & QUIRK_FW_RST_WSID_S3) {
+		mwifiex_pcie_reset_wsid_quirk(card->dev);
+		/* skip performing any other reset-related works */
+		return;
+	}
 
 	/* We can't afford to wait here; remove() might be waiting on us. If we
 	 * can't grab the device lock, maybe we'll get another chance later.

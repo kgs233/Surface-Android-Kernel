@@ -1,0 +1,12 @@
+--- drivers/net/wireless/marvell/mwifiex/cfg80211.c
++++ drivers/net/wireless/marvell/mwifiex/cfg80211.c
+@@ -1311,6 +1344,9 @@ mwifiex_cfg80211_change_virtual_intf(struct wiphy *wiphy,
+ 		case NL80211_IFTYPE_STATION:
+ 			return mwifiex_change_vif_to_sta_adhoc(dev, curr_iftype,
+ 							       type, params);
++		case NL80211_IFTYPE_P2P_CLIENT:
++			return mwifiex_change_vif_to_p2p(dev, curr_iftype,
++							 type, params);
+ 		case NL80211_IFTYPE_AP:
+ 			return mwifiex_change_vif_to_ap(dev, curr_iftype, type,
+ 							params);
