@@ -630,7 +630,7 @@ static void dm_bow_io_hints(struct dm_target *ti, struct queue_limits *limits)
 	const unsigned int block_size = bc->block_size;
 
 	limits->logical_block_size =
-		max_t(unsigned short, limits->logical_block_size, block_size);
+		max_t(unsigned int, limits->logical_block_size, block_size);
 	limits->physical_block_size =
 		max_t(unsigned int, limits->physical_block_size, block_size);
 	limits->io_min = max_t(unsigned int, limits->io_min, block_size);
@@ -646,8 +646,7 @@ static void dm_bow_io_hints(struct dm_target *ti, struct queue_limits *limits)
 	}
 }
 
-static int dm_bow_ctr_optional(struct dm_target *ti, unsigned int argc,
-		char **argv)
+static int dm_bow_ctr_optional(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	struct bow_context *bc = ti->private;
 	struct dm_arg_set as;
@@ -720,7 +719,8 @@ static int dm_bow_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad;
 	}
 
-	bc->block_size = bc->dev->bdev->bd_queue->limits.logical_block_size;
+	bc->block_size =
+		bdev_get_queue(bc->dev->bdev)->limits.logical_block_size;
 	if (argc > 1) {
 		ret = dm_bow_ctr_optional(ti, argc - 1, &argv[1]);
 		if (ret)
@@ -791,7 +791,6 @@ static int dm_bow_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	rb_insert_color(&br->node, &bc->ranges);
 
 	ti->discards_supported = true;
-	ti->may_passthrough_inline_crypto = true;
 
 	return 0;
 
@@ -1274,6 +1273,7 @@ static int dm_bow_iterate_devices(struct dm_target *ti,
 static struct target_type bow_target = {
 	.name   = "bow",
 	.version = {1, 2, 0},
+	.features = DM_TARGET_PASSES_CRYPTO,
 	.module = THIS_MODULE,
 	.ctr    = dm_bow_ctr,
 	.dtr    = dm_bow_dtr,

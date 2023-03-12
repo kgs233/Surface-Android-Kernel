@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Driver for the LID cover switch of the Surface 3
  *
  *  Copyright (c) 2016 Red Hat Inc.
  */
 
-/*
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; version 2 of the License.
- */
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -39,13 +35,6 @@ static const struct dmi_system_id surface3_dmi_table[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Microsoft Corporation"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Surface 3"),
-		},
-	},
-	{
-		.matches = {
-			DMI_MATCH(DMI_BIOS_VENDOR, "American Megatrends Inc."),
-			DMI_MATCH(DMI_SYS_VENDOR, "OEMB"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "OEMB"),
 		},
 	},
 #endif

@@ -233,6 +233,7 @@ static int __ext4fs_dirhash(const struct inode *dir, const char *name, int len,
 		break;
 	case DX_HASH_HALF_MD4_UNSIGNED:
 		str2hashbuf = str2hashbuf_unsigned;
+		fallthrough;
 	case DX_HASH_HALF_MD4:
 		p = name;
 		while (len > 0) {
@@ -246,6 +247,7 @@ static int __ext4fs_dirhash(const struct inode *dir, const char *name, int len,
 		break;
 	case DX_HASH_TEA_UNSIGNED:
 		str2hashbuf = str2hashbuf_unsigned;
+		fallthrough;
 	case DX_HASH_TEA:
 		p = name;
 		while (len > 0) {
@@ -294,7 +296,8 @@ int ext4fs_dirhash(const struct inode *dir, const char *name, int len,
 	unsigned char *buff;
 	struct qstr qstr = {.name = name, .len = len };
 
-	if (len && needs_casefold(dir) && um) {
+	if (len && IS_CASEFOLDED(dir) && um &&
+	    (!IS_ENCRYPTED(dir) || fscrypt_has_encryption_key(dir))) {
 		buff = kzalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
 		if (!buff)
 			return -ENOMEM;

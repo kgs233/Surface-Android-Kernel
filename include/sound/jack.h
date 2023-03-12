@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef __SOUND_JACK_H
 #define __SOUND_JACK_H
 
@@ -5,25 +6,10 @@
  *  Jack abstraction layer
  *
  *  Copyright 2008 Wolfson Microelectronics plc
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <sound/core.h>
+#include <linux/android_kabi.h>
 
 struct input_dev;
 
@@ -58,21 +44,18 @@ enum snd_jack_types {
 	SND_JACK_VIDEOOUT	= 0x0010,
 	SND_JACK_AVOUT		= SND_JACK_LINEOUT | SND_JACK_VIDEOOUT,
 	SND_JACK_LINEIN		= 0x0020,
-	SND_JACK_OC_HPHL        = 0x0040,
-	SND_JACK_OC_HPHR        = 0x0080,
-	SND_JACK_UNSUPPORTED    = 0x0100,
-	SND_JACK_MICROPHONE2    = 0x0200,
-	SND_JACK_ANC_HEADPHONE  = SND_JACK_HEADPHONE | SND_JACK_MICROPHONE |
-				  SND_JACK_MICROPHONE2,
 
 	/* Kept separate from switches to facilitate implementation */
-	SND_JACK_BTN_0		= 0x8000,
-	SND_JACK_BTN_1		= 0x4000,
-	SND_JACK_BTN_2		= 0x2000,
-	SND_JACK_BTN_3		= 0x1000,
-	SND_JACK_BTN_4		= 0x0800,
-	SND_JACK_BTN_5		= 0x0400,
+	SND_JACK_BTN_0		= 0x4000,
+	SND_JACK_BTN_1		= 0x2000,
+	SND_JACK_BTN_2		= 0x1000,
+	SND_JACK_BTN_3		= 0x0800,
+	SND_JACK_BTN_4		= 0x0400,
+	SND_JACK_BTN_5		= 0x0200,
 };
+
+/* Keep in sync with definitions above */
+#define SND_JACK_SWITCH_TYPES 6
 
 struct snd_jack {
 	struct list_head kctl_list;
@@ -87,6 +70,8 @@ struct snd_jack {
 #endif /* CONFIG_SND_JACK_INPUT_DEV */
 	void *private_data;
 	void (*private_free)(struct snd_jack *);
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 #ifdef CONFIG_SND_JACK

@@ -1,11 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Open-Channel SSD NVM configuration
 #
 
 menuconfig NVM
 	bool "Open-Channel SSD target support"
-	depends on BLOCK && PCI && BROKEN
-	select BLK_DEV_NVME
+	depends on BLOCK && BROKEN
 	help
 	  Say Y here to get to enable Open-channel SSDs.
 

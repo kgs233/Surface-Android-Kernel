@@ -114,7 +114,7 @@ kill_priv:
 
 	return 0;
 }
-EXPORT_SYMBOL(setattr_prepare);
+EXPORT_SYMBOL_NS(setattr_prepare, ANDROID_GKI_VFS_EXPORT_ONLY);
 
 /**
  * inode_newsize_ok - may this inode be truncated to a given size
@@ -134,6 +134,8 @@ EXPORT_SYMBOL(setattr_prepare);
  */
 int inode_newsize_ok(const struct inode *inode, loff_t offset)
 {
+	if (offset < 0)
+		return -EINVAL;
 	if (inode->i_size < offset) {
 		unsigned long limit;
 
@@ -158,7 +160,7 @@ out_sig:
 out_big:
 	return -EFBIG;
 }
-EXPORT_SYMBOL(inode_newsize_ok);
+EXPORT_SYMBOL_NS(inode_newsize_ok, ANDROID_GKI_VFS_EXPORT_ONLY);
 
 /**
  * setattr_copy - copy simple metadata updates into the generic inode
@@ -184,14 +186,11 @@ void setattr_copy(struct inode *inode, const struct iattr *attr)
 	if (ia_valid & ATTR_GID)
 		inode->i_gid = attr->ia_gid;
 	if (ia_valid & ATTR_ATIME)
-		inode->i_atime = timespec64_trunc(attr->ia_atime,
-						  inode->i_sb->s_time_gran);
+		inode->i_atime = attr->ia_atime;
 	if (ia_valid & ATTR_MTIME)
-		inode->i_mtime = timespec64_trunc(attr->ia_mtime,
-						  inode->i_sb->s_time_gran);
+		inode->i_mtime = attr->ia_mtime;
 	if (ia_valid & ATTR_CTIME)
-		inode->i_ctime = timespec64_trunc(attr->ia_ctime,
-						  inode->i_sb->s_time_gran);
+		inode->i_ctime = attr->ia_ctime;
 	if (ia_valid & ATTR_MODE) {
 		umode_t mode = attr->ia_mode;
 
@@ -265,8 +264,13 @@ int notify_change(struct dentry * dentry, struct iattr * attr, struct inode **de
 	attr->ia_ctime = now;
 	if (!(ia_valid & ATTR_ATIME_SET))
 		attr->ia_atime = now;
+	else
+		attr->ia_atime = timestamp_truncate(attr->ia_atime, inode);
 	if (!(ia_valid & ATTR_MTIME_SET))
 		attr->ia_mtime = now;
+	else
+		attr->ia_mtime = timestamp_truncate(attr->ia_mtime, inode);
+
 	if (ia_valid & ATTR_KILL_PRIV) {
 		error = security_inode_need_killpriv(dentry);
 		if (error < 0)
@@ -343,4 +347,4 @@ int notify_change(struct dentry * dentry, struct iattr * attr, struct inode **de
 
 	return error;
 }
-EXPORT_SYMBOL(notify_change);
+EXPORT_SYMBOL_NS(notify_change, ANDROID_GKI_VFS_EXPORT_ONLY);

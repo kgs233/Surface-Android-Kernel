@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for Silicon Labs Si570/Si571 Programmable XO/VCXO
  *
@@ -7,16 +8,6 @@
  *
  * Author: Guenter Roeck <guenter.roeck@ericsson.com>
  *	   Sören Brinkmann <soren.brinkmann@xilinx.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/clk.h>
@@ -407,7 +398,7 @@ static int si570_probe(struct i2c_client *client,
 		const struct i2c_device_id *id)
 {
 	struct clk_si570 *data;
-	struct clk_init_data init = {};
+	struct clk_init_data init;
 	u32 initial_fout, factory_fout, stability;
 	int err;
 	enum clk_si570_variant variant = id->driver_data;

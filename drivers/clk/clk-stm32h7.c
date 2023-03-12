@@ -463,7 +463,7 @@ static struct clk_hw *clk_register_stm32_timer_ker(struct device *dev,
 		spinlock_t *lock)
 {
 	struct timer_ker *element;
-	struct clk_init_data init = {};
+	struct clk_init_data init;
 	struct clk_hw *hw;
 	int err;
 
@@ -1216,7 +1216,7 @@ static void __init stm32h7_rcc_init(struct device_node *np)
 	/* get RCC base @ from DT */
 	base = of_iomap(np, 0);
 	if (!base) {
-		pr_err("%s: unable to map resource", np->name);
+		pr_err("%pOFn: unable to map resource", np);
 		goto err_free_clks;
 	}
 

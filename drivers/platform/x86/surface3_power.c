@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0+
-
 /*
  * Supports for the power IC on the Surface 3 tablet.
  *
@@ -7,9 +6,6 @@
  * (C) Copyright 2016-2018 Benjamin Tissoires <benjamin.tissoires@gmail.com>
  * (C) Copyright 2016 Stephen Just <stephenjust@gmail.com>
  *
- */
-
-/*
  * This driver has been reverse-engineered by parsing the DSDT of the Surface 3
  * and looking at the registers of the chips.
  *
@@ -35,16 +31,19 @@
  *     dumps.
  */
 
-#include <asm/unaligned.h>
 #include <linux/acpi.h>
+#include <linux/bits.h>
 #include <linux/freezer.h>
 #include <linux/i2c.h>
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/slab.h>
+#include <linux/types.h>
 #include <linux/uuid.h>
+#include <asm/unaligned.h>
 
-#define POLL_INTERVAL		(2 * HZ)
+#define SURFACE_3_POLL_INTERVAL		(2 * HZ)
+#define SURFACE_3_STRLEN		10
 
 struct mshw0011_data {
 	struct i2c_client	*adp1;
@@ -57,13 +56,6 @@ struct mshw0011_data {
 	bool			bat_charging;
 	u8			trip_point;
 	s32			full_capacity;
-};
-
-struct mshw0011_lookup {
-	struct mshw0011_data	*cdata;
-	unsigned int		n;
-	unsigned int		index;
-	int			addr;
 };
 
 struct mshw0011_handler_data {
@@ -88,10 +80,10 @@ struct bix {
 	u32	min_average_interval;
 	u32	battery_capacity_granularity_1;
 	u32	battery_capacity_granularity_2;
-	char	model[10];
-	char	serial[10];
-	char	type[10];
-	char	OEM[10];
+	char	model[SURFACE_3_STRLEN];
+	char	serial[SURFACE_3_STRLEN];
+	char	type[SURFACE_3_STRLEN];
+	char	OEM[SURFACE_3_STRLEN];
 } __packed;
 
 struct bst {
@@ -117,7 +109,6 @@ struct gsb_buffer {
 		struct bix		bix;
 	} __packed;
 } __packed;
-
 
 #define ACPI_BATTERY_STATE_DISCHARGING	BIT(0)
 #define ACPI_BATTERY_STATE_CHARGING	BIT(1)
@@ -156,15 +147,17 @@ struct gsb_buffer {
 #define MSHW0011_BAT0_REG_SERIAL_NO	0x56
 #define MSHW0011_BAT0_REG_CYCLE_CNT	0x6e
 
-#define MSHW0011_EV_2_5			0x1ff
+#define MSHW0011_EV_2_5_MASK		GENMASK(8, 0)
+
+/* 3f99e367-6220-4955-8b0f-06ef2ae79412 */
+static const guid_t mshw0011_guid =
+	GUID_INIT(0x3F99E367, 0x6220, 0x4955, 0x8B, 0x0F, 0x06, 0xEF,
+		  0x2A, 0xE7, 0x94, 0x12);
 
 static int
 mshw0011_notify(struct mshw0011_data *cdata, u8 arg1, u8 arg2,
 		unsigned int *ret_value)
 {
-	static const guid_t mshw0011_guid =
-		GUID_INIT(0x3F99E367, 0x6220, 0x4955,
-			  0x8B, 0x0F, 0x06, 0xEF, 0x2A, 0xE7, 0x94, 0x12);
 	union acpi_object *obj;
 	struct acpi_device *adev;
 	acpi_handle handle;
@@ -215,7 +208,7 @@ static const struct bix default_bix = {
 static int mshw0011_bix(struct mshw0011_data *cdata, struct bix *bix)
 {
 	struct i2c_client *client = cdata->bat0;
-	char buf[10];
+	char buf[SURFACE_3_STRLEN];
 	int ret;
 
 	*bix = default_bix;
@@ -240,15 +233,21 @@ static int mshw0011_bix(struct mshw0011_data *cdata, struct bix *bix)
 	}
 	bix->last_full_charg_capacity = ret;
 
-	/* get serial number */
+	/*
+	 * Get serial number, on some devices (with unofficial replacement
+	 * battery?) reading any of the serial number range addresses gets
+	 * nacked in this case just leave the serial number empty.
+	 */
 	ret = i2c_smbus_read_i2c_block_data(client, MSHW0011_BAT0_REG_SERIAL_NO,
-					    10, buf);
-	if (ret != 10) {
+					    sizeof(buf), buf);
+	if (ret == -EREMOTEIO) {
+		/* no serial number available */
+	} else if (ret != sizeof(buf)) {
 		dev_err(&client->dev, "Error reading serial no: %d\n", ret);
 		return ret;
+	} else {
+		snprintf(bix->serial, ARRAY_SIZE(bix->serial), "%3pE%6pE", buf + 7, buf);
 	}
-	snprintf(bix->serial, ARRAY_SIZE(bix->serial),
-		 "%*pE%*pE", 3, buf + 7, 6, buf);
 
 	/* get cycle count */
 	ret = i2c_smbus_read_word_data(client, MSHW0011_BAT0_REG_CYCLE_CNT);
@@ -265,7 +264,7 @@ static int mshw0011_bix(struct mshw0011_data *cdata, struct bix *bix)
 		dev_err(&client->dev, "Error reading cycle count: %d\n", ret);
 		return ret;
 	}
-	snprintf(bix->OEM, ARRAY_SIZE(bix->OEM), "%*pE", 3, buf);
+	snprintf(bix->OEM, ARRAY_SIZE(bix->OEM), "%3pE", buf);
 
 	return 0;
 }
@@ -306,14 +305,7 @@ static int mshw0011_bst(struct mshw0011_data *cdata, struct bst *bst)
 
 static int mshw0011_adp_psr(struct mshw0011_data *cdata)
 {
-	struct i2c_client *client = cdata->adp1;
-	int ret;
-
-	ret = i2c_smbus_read_byte_data(client, MSHW0011_ADP1_REG_PSR);
-	if (ret < 0)
-		return ret;
-
-	return ret;
+	return i2c_smbus_read_byte_data(cdata->adp1, MSHW0011_ADP1_REG_PSR);
 }
 
 static int mshw0011_isr(struct mshw0011_data *cdata)
@@ -328,7 +320,6 @@ static int mshw0011_isr(struct mshw0011_data *cdata)
 		return ret;
 
 	status = ret;
-
 	if (status != cdata->charging)
 		mshw0011_notify(cdata, cdata->notify_mask,
 				MSHW0011_NOTIFY_ADP1, &ret);
@@ -340,7 +331,6 @@ static int mshw0011_isr(struct mshw0011_data *cdata)
 		return ret;
 
 	bat_status = bst.battery_state;
-
 	if (bat_status != cdata->bat_charging)
 		mshw0011_notify(cdata, cdata->notify_mask,
 				MSHW0011_NOTIFY_BAT0_BST, &ret);
@@ -350,6 +340,7 @@ static int mshw0011_isr(struct mshw0011_data *cdata)
 	ret = mshw0011_bix(cdata, &bix);
 	if (ret < 0)
 		return ret;
+
 	if (bix.last_full_charg_capacity != cdata->full_capacity)
 		mshw0011_notify(cdata, cdata->notify_mask,
 				MSHW0011_NOTIFY_BAT0_BIX, &ret);
@@ -369,7 +360,7 @@ static int mshw0011_poll_task(void *data)
 	set_freezable();
 
 	while (!kthread_should_stop()) {
-		schedule_timeout_interruptible(POLL_INTERVAL);
+		schedule_timeout_interruptible(SURFACE_3_POLL_INTERVAL);
 		try_to_freeze();
 		ret = mshw0011_isr(data);
 		if (ret)
@@ -418,12 +409,14 @@ mshw0011_space_handler(u32 function, acpi_physical_address command,
 
 	if (gsb->cmd.arg0 == MSHW0011_CMD_DEST_ADP1 &&
 	    gsb->cmd.arg1 == MSHW0011_CMD_ADP1_PSR) {
-		ret = mshw0011_adp_psr(cdata);
-		if (ret >= 0) {
-			status = ret;
-			ret = 0;
+		status = mshw0011_adp_psr(cdata);
+		if (status >= 0) {
+			ret = AE_OK;
+			goto out;
+		} else {
+			ret = AE_ERROR;
+			goto err;
 		}
-		goto out;
 	}
 
 	if (gsb->cmd.arg0 != MSHW0011_CMD_DEST_BAT0) {
@@ -444,7 +437,7 @@ mshw0011_space_handler(u32 function, acpi_physical_address command,
 		ret = mshw0011_bst(cdata, &gsb->bst);
 		break;
 	default:
-		pr_info("command(0x%02x) is not supported.\n", gsb->cmd.arg1);
+		dev_info(&cdata->bat0->dev, "command(0x%02x) is not supported.\n", gsb->cmd.arg1);
 		ret = AE_BAD_PARAMETER;
 		goto err;
 	}
@@ -465,7 +458,6 @@ static int mshw0011_install_space_handler(struct i2c_client *client)
 	acpi_status status;
 
 	handle = ACPI_HANDLE(&client->dev);
-
 	if (!handle)
 		return -ENODEV;
 
@@ -499,10 +491,11 @@ static int mshw0011_install_space_handler(struct i2c_client *client)
 
 static void mshw0011_remove_space_handler(struct i2c_client *client)
 {
-	acpi_handle handle = ACPI_HANDLE(&client->dev);
 	struct mshw0011_handler_data *data;
+	acpi_handle handle;
 	acpi_status status;
 
+	handle = ACPI_HANDLE(&client->dev);
 	if (!handle)
 		return;
 
@@ -522,7 +515,6 @@ static int mshw0011_probe(struct i2c_client *client)
 	struct i2c_board_info board_info;
 	struct device *dev = &client->dev;
 	struct i2c_client *bat0;
-
 	struct mshw0011_data *data;
 	int error, mask;
 
@@ -537,8 +529,8 @@ static int mshw0011_probe(struct i2c_client *client)
 	strlcpy(board_info.type, "MSHW0011-bat0", I2C_NAME_SIZE);
 
 	bat0 = i2c_acpi_new_device(dev, 1, &board_info);
-	if (!bat0)
-		return -ENOMEM;
+	if (IS_ERR(bat0))
+		return PTR_ERR(bat0);
 
 	data->bat0 = bat0;
 	i2c_set_clientdata(bat0, data);
@@ -547,7 +539,7 @@ static int mshw0011_probe(struct i2c_client *client)
 	if (error)
 		goto out_err;
 
-	data->notify_mask = mask == MSHW0011_EV_2_5;
+	data->notify_mask = mask == MSHW0011_EV_2_5_MASK;
 
 	data->poll_task = kthread_run(mshw0011_poll_task, data, "mshw0011_adp");
 	if (IS_ERR(data->poll_task)) {
@@ -594,7 +586,7 @@ static struct i2c_driver mshw0011_driver = {
 	.remove = mshw0011_remove,
 	.driver = {
 		.name = "mshw0011",
-		.acpi_match_table = ACPI_PTR(mshw0011_acpi_match),
+		.acpi_match_table = mshw0011_acpi_match,
 	},
 };
 module_i2c_driver(mshw0011_driver);

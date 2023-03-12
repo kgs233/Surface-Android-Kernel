@@ -1,17 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AMD Cryptographic Coprocessor (CCP) driver
  *
- * Copyright (C) 2016,2017 Advanced Micro Devices, Inc.
+ * Copyright (C) 2016,2019 Advanced Micro Devices, Inc.
  *
  * Author: Gary R Hook <gary.hook@amd.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/dma-mapping.h>
 #include <linux/dmaengine.h>
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
@@ -37,6 +35,10 @@
 static unsigned int dma_chan_attr = CCP_DMA_DFLT;
 module_param(dma_chan_attr, uint, 0444);
 MODULE_PARM_DESC(dma_chan_attr, "Set DMA channel visibility: 0 (default) = device defaults, 1 = make private, 2 = make public");
+
+static unsigned int dmaengine = 1;
+module_param(dmaengine, uint, 0444);
+MODULE_PARM_DESC(dmaengine, "Register services with the DMA subsystem (any non-zero value, default: 1)");
 
 static unsigned int ccp_get_dma_chan_attr(struct ccp_device *ccp)
 {
@@ -640,6 +642,10 @@ static void ccp_dma_release(struct ccp_device *ccp)
 	for (i = 0; i < ccp->cmd_q_count; i++) {
 		chan = ccp->ccp_dma_chan + i;
 		dma_chan = &chan->dma_chan;
+
+		if (dma_chan->client_count)
+			dma_release_channel(dma_chan);
+
 		tasklet_kill(&chan->cleanup_tasklet);
 		list_del_rcu(&dma_chan->device_node);
 	}
@@ -654,6 +660,9 @@ int ccp_dmaengine_register(struct ccp_device *ccp)
 	char *dma_desc_cache_name;
 	unsigned int i;
 	int ret;
+
+	if (!dmaengine)
+		return 0;
 
 	ccp->ccp_dma_chan = devm_kcalloc(ccp->dev, ccp->cmd_q_count,
 					 sizeof(*(ccp->ccp_dma_chan)),
@@ -759,8 +768,11 @@ void ccp_dmaengine_unregister(struct ccp_device *ccp)
 {
 	struct dma_device *dma_dev = &ccp->dma_dev;
 
-	dma_async_device_unregister(dma_dev);
+	if (!dmaengine)
+		return;
+
 	ccp_dma_release(ccp);
+	dma_async_device_unregister(dma_dev);
 
 	kmem_cache_destroy(ccp->dma_desc_cache);
 	kmem_cache_destroy(ccp->dma_cmd_cache);

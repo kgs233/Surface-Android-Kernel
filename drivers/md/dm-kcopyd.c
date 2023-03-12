@@ -17,6 +17,8 @@
 #include <linux/list.h>
 #include <linux/mempool.h>
 #include <linux/module.h>
+#include <linux/of_platform.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/pagemap.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
@@ -28,10 +30,126 @@
 
 #include "dm-core.h"
 
-#define SUB_JOB_SIZE	128
 #define SPLIT_COUNT	8
 #define MIN_JOBS	8
-#define RESERVE_PAGES	(DIV_ROUND_UP(SUB_JOB_SIZE << SECTOR_SHIFT, PAGE_SIZE))
+
+#define DEFAULT_SUB_JOB_SIZE_KB 512
+#define MAX_SUB_JOB_SIZE_KB     1024
+
+static unsigned kcopyd_subjob_size_kb = DEFAULT_SUB_JOB_SIZE_KB;
+
+module_param(kcopyd_subjob_size_kb, uint, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(kcopyd_subjob_size_kb, "Sub-job size for dm-kcopyd clients");
+
+static bool rsm_enabled;
+static phys_addr_t rsm_mem_base, rsm_mem_size;
+
+#ifndef MODULE
+static DEFINE_SPINLOCK(rsm_lock);
+static int *rsm_mem;
+static int rsm_page_cnt;
+static int rsm_tbl_idx;
+static struct reserved_mem *rmem;
+
+static void __init kcopyd_rsm_init(void)
+{
+	static struct device_node *rsm_node;
+	int ret = 0;
+
+	if (!rsm_enabled)
+		return;
+
+	rsm_node = of_find_compatible_node(NULL, NULL, "mediatek,dm_ota");
+	if (!rsm_node) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	rmem = of_reserved_mem_lookup(rsm_node);
+	if (!rmem) {
+		ret = -EINVAL;
+		goto out_put_node;
+	}
+
+	rsm_mem_base = rmem->base;
+	rsm_mem_size = rmem->size;
+	rsm_page_cnt = rsm_mem_size / PAGE_SIZE;
+	rsm_mem = kcalloc(rsm_page_cnt, sizeof(int), GFP_KERNEL);
+	if (!rsm_mem)
+		ret = -ENOMEM;
+
+out_put_node:
+	of_node_put(rsm_node);
+out:
+	if (ret)
+		pr_warn("kcopyd: failed to init rsm: %d", ret);
+}
+
+static int __init kcopyd_rsm_enable(char *str)
+{
+	rsm_enabled = true;
+
+	return 0;
+}
+early_param("mtk_kcopyd_quirk", kcopyd_rsm_enable);
+
+static void kcopyd_rsm_get_page(struct page **p)
+{
+	int i;
+	unsigned long flags;
+
+	*p = NULL;
+	spin_lock_irqsave(&rsm_lock, flags);
+	for (i = 0 ; i < rsm_page_cnt ; i++) {
+		rsm_tbl_idx = (rsm_tbl_idx + 1 == rsm_page_cnt) ? 0 : rsm_tbl_idx + 1;
+
+		if (rsm_mem[rsm_tbl_idx] == 0) {
+			rsm_mem[rsm_tbl_idx] = 1;
+			*p = virt_to_page(phys_to_virt(rsm_mem_base + PAGE_SIZE
+						       * rsm_tbl_idx));
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&rsm_lock, flags);
+}
+
+static void kcopyd_rsm_drop_page(struct page **p)
+{
+	u64 off;
+	unsigned long flags;
+
+	if (*p) {
+		off = page_to_phys(*p) - rsm_mem_base;
+		spin_lock_irqsave(&rsm_lock, flags);
+		rsm_mem[off >> PAGE_SHIFT] = 0;
+		spin_unlock_irqrestore(&rsm_lock, flags);
+		*p = NULL;
+	}
+}
+
+static void kcopyd_rsm_destroy(void)
+{
+	if (rsm_enabled)
+		kfree(rsm_mem);
+}
+
+#else
+#define kcopyd_rsm_destroy(...)
+#define kcopyd_rsm_drop_page(...)
+#define kcopyd_rsm_get_page(...)
+#define kcopyd_rsm_init(...)
+#endif
+
+static unsigned dm_get_kcopyd_subjob_size(void)
+{
+	unsigned sub_job_size_kb;
+
+	sub_job_size_kb = __dm_get_module_param(&kcopyd_subjob_size_kb,
+						DEFAULT_SUB_JOB_SIZE_KB,
+						MAX_SUB_JOB_SIZE_KB);
+
+	return sub_job_size_kb << 1;
+}
 
 /*-----------------------------------------------------------------
  * Each kcopyd client has its own little pool of preallocated
@@ -41,6 +159,7 @@ struct dm_kcopyd_client {
 	struct page_list *pages;
 	unsigned nr_reserved_pages;
 	unsigned nr_free_pages;
+	unsigned sub_job_size;
 
 	struct dm_io_client *io_client;
 
@@ -193,7 +312,7 @@ static void wake(struct dm_kcopyd_client *kc)
 /*
  * Obtain one page for the use of kcopyd.
  */
-static struct page_list *alloc_pl(gfp_t gfp)
+static struct page_list *alloc_pl(gfp_t gfp, unsigned long job_flags)
 {
 	struct page_list *pl;
 
@@ -201,7 +320,12 @@ static struct page_list *alloc_pl(gfp_t gfp)
 	if (!pl)
 		return NULL;
 
-	pl->page = alloc_page(gfp);
+	if (rsm_enabled && test_bit(DM_KCOPYD_SNAP_MERGE, &job_flags)) {
+		kcopyd_rsm_get_page(&pl->page);
+	} else {
+		pl->page = alloc_page(gfp);
+	}
+
 	if (!pl->page) {
 		kfree(pl);
 		return NULL;
@@ -212,7 +336,14 @@ static struct page_list *alloc_pl(gfp_t gfp)
 
 static void free_pl(struct page_list *pl)
 {
-	__free_page(pl->page);
+	struct page *p = pl->page;
+	phys_addr_t pa = page_to_phys(p);
+
+	if (rsm_enabled && pa >= rsm_mem_base && pa < rsm_mem_base + rsm_mem_size)
+		kcopyd_rsm_drop_page(&pl->page);
+	else
+		__free_page(pl->page);
+
 	kfree(pl);
 }
 
@@ -240,14 +371,15 @@ static void kcopyd_put_pages(struct dm_kcopyd_client *kc, struct page_list *pl)
 }
 
 static int kcopyd_get_pages(struct dm_kcopyd_client *kc,
-			    unsigned int nr, struct page_list **pages)
+			    unsigned int nr, struct page_list **pages,
+			    unsigned long job_flags)
 {
 	struct page_list *pl;
 
 	*pages = NULL;
 
 	do {
-		pl = alloc_pl(__GFP_NOWARN | __GFP_NORETRY | __GFP_KSWAPD_RECLAIM);
+		pl = alloc_pl(__GFP_NOWARN | __GFP_NORETRY | __GFP_KSWAPD_RECLAIM, job_flags);
 		if (unlikely(!pl)) {
 			/* Use reserved pages */
 			pl = kc->pages;
@@ -291,7 +423,7 @@ static int client_reserve_pages(struct dm_kcopyd_client *kc, unsigned nr_pages)
 	struct page_list *pl = NULL, *next;
 
 	for (i = 0; i < nr_pages; i++) {
-		next = alloc_pl(GFP_KERNEL);
+		next = alloc_pl(GFP_KERNEL, 0);
 		if (!next) {
 			if (pl)
 				drop_pages(pl);
@@ -377,6 +509,8 @@ int __init dm_kcopyd_init(void)
 	zero_page_list.next = &zero_page_list;
 	zero_page_list.page = ZERO_PAGE(0);
 
+	kcopyd_rsm_init();
+
 	return 0;
 }
 
@@ -384,6 +518,7 @@ void dm_kcopyd_exit(void)
 {
 	kmem_cache_destroy(_job_cache);
 	_job_cache = NULL;
+	kcopyd_rsm_destroy();
 }
 
 /*
@@ -568,7 +703,7 @@ static int run_pages_job(struct kcopyd_job *job)
 	int r;
 	unsigned nr_pages = dm_div_up(job->dests[0].count, PAGE_SIZE >> 9);
 
-	r = kcopyd_get_pages(job->kc, nr_pages, &job->pages);
+	r = kcopyd_get_pages(job->kc, nr_pages, &job->pages, job->flags);
 	if (!r) {
 		/* this job is ready for io */
 		push(&job->kc->io_jobs, job);
@@ -696,8 +831,8 @@ static void segment_complete(int read_err, unsigned long write_err,
 		progress = job->progress;
 		count = job->source.count - progress;
 		if (count) {
-			if (count > SUB_JOB_SIZE)
-				count = SUB_JOB_SIZE;
+			if (count > kc->sub_job_size)
+				count = kc->sub_job_size;
 
 			job->progress += count;
 		}
@@ -824,7 +959,7 @@ void dm_kcopyd_copy(struct dm_kcopyd_client *kc, struct dm_io_region *from,
 	job->master_job = job;
 	job->write_offset = 0;
 
-	if (job->source.count <= SUB_JOB_SIZE)
+	if (job->source.count <= kc->sub_job_size)
 		dispatch_job(job);
 	else {
 		job->progress = 0;
@@ -891,6 +1026,7 @@ int kcopyd_cancel(struct kcopyd_job *job, int block)
 struct dm_kcopyd_client *dm_kcopyd_client_create(struct dm_kcopyd_throttle *throttle)
 {
 	int r;
+	unsigned reserve_pages;
 	struct dm_kcopyd_client *kc;
 
 	kc = kzalloc(sizeof(*kc), GFP_KERNEL);
@@ -915,9 +1051,12 @@ struct dm_kcopyd_client *dm_kcopyd_client_create(struct dm_kcopyd_throttle *thro
 		goto bad_workqueue;
 	}
 
+	kc->sub_job_size = dm_get_kcopyd_subjob_size();
+	reserve_pages = DIV_ROUND_UP(kc->sub_job_size << SECTOR_SHIFT, PAGE_SIZE);
+
 	kc->pages = NULL;
 	kc->nr_reserved_pages = kc->nr_free_pages = 0;
-	r = client_reserve_pages(kc, RESERVE_PAGES);
+	r = client_reserve_pages(kc, reserve_pages);
 	if (r)
 		goto bad_client_pages;
 

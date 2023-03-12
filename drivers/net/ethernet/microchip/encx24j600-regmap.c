@@ -1,13 +1,10 @@
-/**
+// SPDX-License-Identifier: GPL-2.0-only
+/*
  * Register map access API - ENCX24J600 support
  *
  * Copyright 2015 Gridpoint
  *
  * Author: Jon Ringle <jringle@gridpoint.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/delay.h>
@@ -19,11 +16,6 @@
 #include <linux/spi/spi.h>
 
 #include "encx24j600_hw.h"
-
-static inline bool is_bits_set(int value, int mask)
-{
-	return (value & mask) == mask;
-}
 
 static int encx24j600_switch_bank(struct encx24j600_context *ctx,
 				  int bank)
@@ -367,7 +359,7 @@ static int regmap_encx24j600_phy_reg_read(void *context, unsigned int reg,
 		goto err_out;
 
 	usleep_range(26, 100);
-	while ((ret = regmap_read(ctx->regmap, MISTAT, &mistat) != 0) &&
+	while (((ret = regmap_read(ctx->regmap, MISTAT, &mistat)) == 0) &&
 	       (mistat & BUSY))
 		cpu_relax();
 
@@ -405,7 +397,7 @@ static int regmap_encx24j600_phy_reg_write(void *context, unsigned int reg,
 		goto err_out;
 
 	usleep_range(26, 100);
-	while ((ret = regmap_read(ctx->regmap, MISTAT, &mistat) != 0) &&
+	while (((ret = regmap_read(ctx->regmap, MISTAT, &mistat)) == 0) &&
 	       (mistat & BUSY))
 		cpu_relax();
 

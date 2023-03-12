@@ -70,7 +70,7 @@ npcm7xx_clk_register_pll(void __iomem *pllcon, const char *name,
 			 const char *parent_name, unsigned long flags)
 {
 	struct npcm7xx_clk_pll *pll;
-	struct clk_init_data init = {};
+	struct clk_init_data init;
 	struct clk_hw *hw;
 	int ret;
 
@@ -549,7 +549,7 @@ static void __init npcm7xx_clk_init(struct device_node *clk_np)
 
 	ret = of_address_to_resource(clk_np, 0, &res);
 	if (ret) {
-		pr_err("%s: failed to get resource, ret %d\n", clk_np->name,
+		pr_err("%pOFn: failed to get resource, ret %d\n", clk_np,
 			ret);
 		return;
 	}
