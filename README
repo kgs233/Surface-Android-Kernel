@@ -18,4 +18,4 @@ Please read the Documentation/process/changes.rst file, as it contains the
 requirements for building and running the kernel, and information about
 the problems which may result by upgrading your kernel.
 
-This kernel is fork to GKI and Surface-linux
+This kernel is fork to GKI and linux-surface kernel
