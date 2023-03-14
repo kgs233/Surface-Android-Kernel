@@ -8,6 +8,7 @@
 #include <net/af_unix.h>
 #include <net/scm.h>
 #include <linux/init.h>
+#include <linux/io_uring.h>
 
 #include "scm.h"
 
@@ -33,6 +34,9 @@ struct sock *unix_get_socket(struct file *filp)
 		/* PF_UNIX ? */
 		if (s && sock->ops && sock->ops->family == PF_UNIX)
 			u_sock = s;
+	} else {
+		/* Could be an io_uring instance */
+		u_sock = io_uring_get_socket(filp);
 	}
 	return u_sock;
 }

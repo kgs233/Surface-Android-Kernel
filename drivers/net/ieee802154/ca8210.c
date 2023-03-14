@@ -53,6 +53,7 @@
 #include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/ieee802154.h>
+#include <linux/io.h>
 #include <linux/kfifo.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
@@ -925,7 +926,7 @@ static int ca8210_spi_transfer(
 
 	dev_dbg(&spi->dev, "%s called\n", __func__);
 
-	cas_ctl = kmalloc(sizeof(*cas_ctl), GFP_ATOMIC);
+	cas_ctl = kzalloc(sizeof(*cas_ctl), GFP_ATOMIC);
 	if (!cas_ctl)
 		return -ENOMEM;
 
@@ -945,7 +946,8 @@ static int ca8210_spi_transfer(
 	cas_ctl->transfer.bits_per_word = 0; /* Use device setting */
 	cas_ctl->transfer.tx_buf = cas_ctl->tx_buf;
 	cas_ctl->transfer.rx_buf = cas_ctl->tx_in_buf;
-	cas_ctl->transfer.delay_usecs = 0;
+	cas_ctl->transfer.delay.value = 0;
+	cas_ctl->transfer.delay.unit = SPI_DELAY_UNIT_USECS;
 	cas_ctl->transfer.cs_change = 0;
 	cas_ctl->transfer.len = sizeof(struct mac_message);
 	cas_ctl->msg.complete = ca8210_spi_transfer_complete;
@@ -3020,14 +3022,7 @@ static int ca8210_test_interface_init(struct ca8210_priv *priv)
 		priv,
 		&test_int_fops
 	);
-	if (IS_ERR(test->ca8210_dfs_spi_int)) {
-		dev_err(
-			&priv->spi->dev,
-			"Error %ld when creating debugfs node\n",
-			PTR_ERR(test->ca8210_dfs_spi_int)
-		);
-		return PTR_ERR(test->ca8210_dfs_spi_int);
-	}
+
 	debugfs_create_symlink("ca8210", NULL, node_name);
 	init_waitqueue_head(&test->readq);
 	return kfifo_alloc(

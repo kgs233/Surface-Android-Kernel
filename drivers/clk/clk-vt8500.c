@@ -1,16 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Clock implementation for VIA/Wondermedia SoC's
  * Copyright (C) 2012 Tony Prisk <linux@prisktech.co.nz>
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
 
 #include <linux/io.h>
@@ -236,7 +227,7 @@ static __init void vtwm_device_clk_init(struct device_node *node)
 	struct clk_device *dev_clk;
 	const char *clk_name = node->name;
 	const char *parent_name;
-	struct clk_init_data init = {};
+	struct clk_init_data init;
 	int rc;
 	int clk_init_flags = 0;
 
@@ -686,7 +677,7 @@ static __init void vtwm_pll_clk_init(struct device_node *node, int pll_type)
 	struct clk_pll *pll_clk;
 	const char *clk_name = node->name;
 	const char *parent_name;
-	struct clk_init_data init = {};
+	struct clk_init_data init;
 	int rc;
 
 	if (!pmc_base)

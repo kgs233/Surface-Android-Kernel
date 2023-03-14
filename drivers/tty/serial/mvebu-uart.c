@@ -73,6 +73,7 @@
 
 #define UART_OSAMP		0x14
 #define  OSAMP_DEFAULT_DIVISOR	16
+#define  OSAMP_DIVISORS_MASK	0x3F3F3F3F
 
 #define MVEBU_NR_UARTS		2
 
@@ -237,6 +238,7 @@ static void mvebu_uart_rx_chars(struct uart_port *port, unsigned int status)
 	struct tty_port *tport = &port->state->port;
 	unsigned char ch = 0;
 	char flag = 0;
+	int ret;
 
 	do {
 		if (status & STAT_RX_RDY(port)) {
@@ -247,6 +249,16 @@ static void mvebu_uart_rx_chars(struct uart_port *port, unsigned int status)
 
 			if (status & STAT_PAR_ERR)
 				port->icount.parity++;
+		}
+
+		/*
+		 * For UART2, error bits are not cleared on buffer read.
+		 * This causes interrupt loop and system hang.
+		 */
+		if (IS_EXTENDED(port) && (status & STAT_BRK_ERR)) {
+			ret = readl(port->membase + UART_STAT);
+			ret |= STAT_BRK_ERR;
+			writel(ret, port->membase + UART_STAT);
 		}
 
 		if (status & STAT_BRK_DET) {
@@ -442,14 +454,13 @@ static void mvebu_uart_shutdown(struct uart_port *port)
 	}
 }
 
-static int mvebu_uart_baud_rate_set(struct uart_port *port, unsigned int baud)
+static unsigned int mvebu_uart_baud_rate_set(struct uart_port *port, unsigned int baud)
 {
-	struct mvebu_uart *mvuart = to_mvuart(port);
 	unsigned int d_divisor, m_divisor;
-	u32 brdv;
+	u32 brdv, osamp;
 
-	if (IS_ERR(mvuart->clk))
-		return -PTR_ERR(mvuart->clk);
+	if (!port->uartclk)
+		return 0;
 
 	/*
 	 * The baudrate is derived from the UART clock thanks to two divisors:
@@ -469,7 +480,11 @@ static int mvebu_uart_baud_rate_set(struct uart_port *port, unsigned int baud)
 	brdv |= d_divisor;
 	writel(brdv, port->membase + UART_BRDV);
 
-	return 0;
+	osamp = readl(port->membase + UART_OSAMP);
+	osamp &= ~OSAMP_DIVISORS_MASK;
+	writel(osamp, port->membase + UART_OSAMP);
+
+	return DIV_ROUND_CLOSEST(port->uartclk, d_divisor * m_divisor);
 }
 
 static void mvebu_uart_set_termios(struct uart_port *port,
@@ -506,15 +521,11 @@ static void mvebu_uart_set_termios(struct uart_port *port,
 	max_baud = 230400;
 
 	baud = uart_get_baud_rate(port, termios, old, min_baud, max_baud);
-	if (mvebu_uart_baud_rate_set(port, baud)) {
-		/* No clock available, baudrate cannot be changed */
-		if (old)
-			baud = uart_get_baud_rate(port, old, NULL,
-						  min_baud, max_baud);
-	} else {
-		tty_termios_encode_baud_rate(termios, baud, baud);
-		uart_update_timeout(port, termios->c_cflag, baud);
-	}
+	baud = mvebu_uart_baud_rate_set(port, baud);
+
+	/* In case baudrate cannot be changed, report previous old value */
+	if (baud == 0 && old)
+		baud = tty_termios_baud_rate(old);
 
 	/* Only the following flag changes are supported */
 	if (old) {
@@ -523,6 +534,11 @@ static void mvebu_uart_set_termios(struct uart_port *port,
 		termios->c_cflag &= CREAD | CBAUD;
 		termios->c_cflag |= old->c_cflag & ~(CREAD | CBAUD);
 		termios->c_cflag |= CS8;
+	}
+
+	if (baud != 0) {
+		tty_termios_encode_baud_rate(termios, baud, baud);
+		uart_update_timeout(port, termios->c_cflag, baud);
 	}
 
 	spin_unlock_irqrestore(&port->lock, flags);
@@ -811,7 +827,7 @@ static int mvebu_uart_probe(struct platform_device *pdev)
 							   &pdev->dev);
 	struct uart_port *port;
 	struct mvebu_uart *mvuart;
-	int ret, id, irq;
+	int id, irq;
 
 	if (!reg) {
 		dev_err(&pdev->dev, "no registers defined\n");
@@ -889,10 +905,8 @@ static int mvebu_uart_probe(struct platform_device *pdev)
 	if (platform_irq_count(pdev) == 1) {
 		/* Old bindings: no name on the single unamed UART0 IRQ */
 		irq = platform_get_irq(pdev, 0);
-		if (irq < 0) {
-			dev_err(&pdev->dev, "unable to get UART IRQ\n");
+		if (irq < 0)
 			return irq;
-		}
 
 		mvuart->irq[UART_IRQ_SUM] = irq;
 	} else {
@@ -902,18 +916,14 @@ static int mvebu_uart_probe(struct platform_device *pdev)
 		 * uart-sum of UART0 port.
 		 */
 		irq = platform_get_irq_byname(pdev, "uart-rx");
-		if (irq < 0) {
-			dev_err(&pdev->dev, "unable to get 'uart-rx' IRQ\n");
+		if (irq < 0)
 			return irq;
-		}
 
 		mvuart->irq[UART_RX_IRQ] = irq;
 
 		irq = platform_get_irq_byname(pdev, "uart-tx");
-		if (irq < 0) {
-			dev_err(&pdev->dev, "unable to get 'uart-tx' IRQ\n");
+		if (irq < 0)
 			return irq;
-		}
 
 		mvuart->irq[UART_TX_IRQ] = irq;
 	}
@@ -923,10 +933,7 @@ static int mvebu_uart_probe(struct platform_device *pdev)
 	udelay(1);
 	writel(0, port->membase + UART_CTRL(port));
 
-	ret = uart_add_one_port(&mvebu_uart_driver, port);
-	if (ret)
-		return ret;
-	return 0;
+	return uart_add_one_port(&mvebu_uart_driver, port);
 }
 
 static struct mvebu_uart_driver_data uart_std_driver_data = {

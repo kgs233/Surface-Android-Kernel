@@ -1,7 +1,10 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0
 #
-# Print ld.lld's version in a 5 or 6-digit form.
+# Usage: $ ./scripts/lld-version.sh ld.lld
+#
+# Print the linker version of `ld.lld' in a 5 or 6-digit form
+# such as `100001' for ld.lld 10.0.1 etc.
 
 set -e
 
@@ -14,8 +17,6 @@ get_canonical_version()
 	# If the 2nd or 3rd field is missing, fill it with a zero.
 	echo $((10000 * $1 + 100 * ${2:-0} + ${3:-0}))
 }
-
-orig_args="$@"
 
 # Get the first line of the --version output.
 IFS='

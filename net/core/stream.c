@@ -32,7 +32,7 @@ void sk_stream_write_space(struct sock *sk)
 	struct socket *sock = sk->sk_socket;
 	struct socket_wq *wq;
 
-	if (sk_stream_is_writeable(sk) && sock) {
+	if (__sk_stream_is_writeable(sk, 1) && sock) {
 		clear_bit(SOCK_NOSPACE, &sock->flags);
 
 		rcu_read_lock();
@@ -159,7 +159,8 @@ int sk_stream_wait_memory(struct sock *sk, long *timeo_p)
 		*timeo_p = current_timeo;
 	}
 out:
-	remove_wait_queue(sk_sleep(sk), &wait);
+	if (!sock_flag(sk, SOCK_DEAD))
+		remove_wait_queue(sk_sleep(sk), &wait);
 	return err;
 
 do_error:

@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * net/sched/sch_choke.c	CHOKE scheduler
  *
  * Copyright (c) 2011 Stephen Hemminger <shemminger@vyatta.com>
  * Copyright (c) 2011 Eric Dumazet <eric.dumazet@gmail.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
  */
 
 #include <linux/module.h>
@@ -135,7 +131,6 @@ static void choke_drop_by_idx(struct Qdisc *sch, unsigned int idx,
 }
 
 struct choke_skb_cb {
-	u16			classid;
 	u8			keys_valid;
 	struct			flow_keys_digest keys;
 };
@@ -144,11 +139,6 @@ static inline struct choke_skb_cb *choke_skb_cb(const struct sk_buff *skb)
 {
 	qdisc_cb_private_validate(skb, sizeof(struct choke_skb_cb));
 	return (struct choke_skb_cb *)qdisc_skb_cb(skb)->data;
-}
-
-static inline void choke_set_classid(struct sk_buff *skb, u16 classid)
-{
-	choke_skb_cb(skb)->classid = classid;
 }
 
 /*
@@ -325,8 +315,6 @@ static void choke_reset(struct Qdisc *sch)
 		rtnl_qdisc_drop(skb, sch);
 	}
 
-	sch->q.qlen = 0;
-	sch->qstats.backlog = 0;
 	if (q->tab)
 		memset(q->tab, 0, (q->tab_mask + 1) * sizeof(struct sk_buff *));
 	q->head = q->tail = 0;
@@ -360,7 +348,8 @@ static int choke_change(struct Qdisc *sch, struct nlattr *opt,
 	if (opt == NULL)
 		return -EINVAL;
 
-	err = nla_parse_nested(tb, TCA_CHOKE_MAX, opt, choke_policy, NULL);
+	err = nla_parse_nested_deprecated(tb, TCA_CHOKE_MAX, opt,
+					  choke_policy, NULL);
 	if (err < 0)
 		return err;
 
@@ -382,7 +371,7 @@ static int choke_change(struct Qdisc *sch, struct nlattr *opt,
 	if (mask != q->tab_mask) {
 		struct sk_buff **ntab;
 
-		ntab = kvmalloc_array((mask + 1), sizeof(struct sk_buff *), GFP_KERNEL | __GFP_ZERO);
+		ntab = kvcalloc(mask + 1, sizeof(struct sk_buff *), GFP_KERNEL);
 		if (!ntab)
 			return -ENOMEM;
 
@@ -454,7 +443,7 @@ static int choke_dump(struct Qdisc *sch, struct sk_buff *skb)
 		.Scell_log	= q->parms.Scell_log,
 	};
 
-	opts = nla_nest_start(skb, TCA_OPTIONS);
+	opts = nla_nest_start_noflag(skb, TCA_OPTIONS);
 	if (opts == NULL)
 		goto nla_put_failure;
 

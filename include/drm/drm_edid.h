@@ -25,6 +25,7 @@
 
 #include <linux/types.h>
 #include <linux/hdmi.h>
+#include <drm/drm_mode.h>
 
 struct drm_device;
 struct i2c_adapter;
@@ -89,6 +90,11 @@ struct detailed_pixel_timing {
 struct detailed_data_string {
 	u8 str[13];
 } __attribute__((packed));
+
+#define DRM_EDID_DEFAULT_GTF_SUPPORT_FLAG   0x00
+#define DRM_EDID_RANGE_LIMITS_ONLY_FLAG     0x01
+#define DRM_EDID_SECONDARY_GTF_SUPPORT_FLAG 0x02
+#define DRM_EDID_CVT_SUPPORT_FLAG           0x04
 
 struct detailed_data_monitor_range {
 	u8 min_vfreq;
@@ -176,21 +182,23 @@ struct detailed_timing {
 #define DRM_EDID_INPUT_BLANK_TO_BLACK  (1 << 4)
 #define DRM_EDID_INPUT_VIDEO_LEVEL     (3 << 5)
 #define DRM_EDID_INPUT_DIGITAL         (1 << 7)
-#define DRM_EDID_DIGITAL_DEPTH_MASK    (7 << 4)
-#define DRM_EDID_DIGITAL_DEPTH_UNDEF   (0 << 4)
-#define DRM_EDID_DIGITAL_DEPTH_6       (1 << 4)
-#define DRM_EDID_DIGITAL_DEPTH_8       (2 << 4)
-#define DRM_EDID_DIGITAL_DEPTH_10      (3 << 4)
-#define DRM_EDID_DIGITAL_DEPTH_12      (4 << 4)
-#define DRM_EDID_DIGITAL_DEPTH_14      (5 << 4)
-#define DRM_EDID_DIGITAL_DEPTH_16      (6 << 4)
-#define DRM_EDID_DIGITAL_DEPTH_RSVD    (7 << 4)
-#define DRM_EDID_DIGITAL_TYPE_UNDEF    (0)
-#define DRM_EDID_DIGITAL_TYPE_DVI      (1)
-#define DRM_EDID_DIGITAL_TYPE_HDMI_A   (2)
-#define DRM_EDID_DIGITAL_TYPE_HDMI_B   (3)
-#define DRM_EDID_DIGITAL_TYPE_MDDI     (4)
-#define DRM_EDID_DIGITAL_TYPE_DP       (5)
+#define DRM_EDID_DIGITAL_DEPTH_MASK    (7 << 4) /* 1.4 */
+#define DRM_EDID_DIGITAL_DEPTH_UNDEF   (0 << 4) /* 1.4 */
+#define DRM_EDID_DIGITAL_DEPTH_6       (1 << 4) /* 1.4 */
+#define DRM_EDID_DIGITAL_DEPTH_8       (2 << 4) /* 1.4 */
+#define DRM_EDID_DIGITAL_DEPTH_10      (3 << 4) /* 1.4 */
+#define DRM_EDID_DIGITAL_DEPTH_12      (4 << 4) /* 1.4 */
+#define DRM_EDID_DIGITAL_DEPTH_14      (5 << 4) /* 1.4 */
+#define DRM_EDID_DIGITAL_DEPTH_16      (6 << 4) /* 1.4 */
+#define DRM_EDID_DIGITAL_DEPTH_RSVD    (7 << 4) /* 1.4 */
+#define DRM_EDID_DIGITAL_TYPE_MASK     (7 << 0) /* 1.4 */
+#define DRM_EDID_DIGITAL_TYPE_UNDEF    (0 << 0) /* 1.4 */
+#define DRM_EDID_DIGITAL_TYPE_DVI      (1 << 0) /* 1.4 */
+#define DRM_EDID_DIGITAL_TYPE_HDMI_A   (2 << 0) /* 1.4 */
+#define DRM_EDID_DIGITAL_TYPE_HDMI_B   (3 << 0) /* 1.4 */
+#define DRM_EDID_DIGITAL_TYPE_MDDI     (4 << 0) /* 1.4 */
+#define DRM_EDID_DIGITAL_TYPE_DP       (5 << 0) /* 1.4 */
+#define DRM_EDID_DIGITAL_DFP_1_X       (1 << 0) /* 1.3 */
 
 #define DRM_EDID_FEATURE_DEFAULT_GTF      (1 << 0)
 #define DRM_EDID_FEATURE_PREFERRED_TIMING (1 << 1)
@@ -220,16 +228,6 @@ struct detailed_timing {
 #define DRM_EDID_YCBCR420_DC_MASK (DRM_EDID_YCBCR420_DC_48 | \
 				    DRM_EDID_YCBCR420_DC_36 | \
 				    DRM_EDID_YCBCR420_DC_30)
-
-#define DRM_EDID_CLRMETRY_xvYCC_601   (1 << 0)
-#define DRM_EDID_CLRMETRY_xvYCC_709   (1 << 1)
-#define DRM_EDID_CLRMETRY_sYCC_601    (1 << 2)
-#define DRM_EDID_CLRMETRY_ADBYCC_601  (1 << 3)
-#define DRM_EDID_CLRMETRY_ADB_RGB     (1 << 4)
-#define DRM_EDID_CLRMETRY_BT2020_CYCC (1 << 5)
-#define DRM_EDID_CLRMETRY_BT2020_YCC  (1 << 6)
-#define DRM_EDID_CLRMETRY_BT2020_RGB  (1 << 7)
-#define DRM_EDID_CLRMETRY_DCI_P3      (1 << 15)
 
 /* ELD Header Block */
 #define DRM_ELD_HEADER_BLOCK_SIZE	4
@@ -289,11 +287,6 @@ struct detailed_timing {
 
 #define DRM_ELD_CEA_SAD(mnl, sad)	(20 + (mnl) + 3 * (sad))
 
-/* HDMI 2.0 */
-#define DRM_EDID_3D_INDEPENDENT_VIEW	(1 << 2)
-#define DRM_EDID_3D_DUAL_VIEW		(1 << 1)
-#define DRM_EDID_3D_OSD_DISPARITY	(1 << 0)
-
 struct edid {
 	u8 header[8];
 	/* Vendor & product info */
@@ -346,6 +339,7 @@ struct cea_sad {
 
 struct drm_encoder;
 struct drm_connector;
+struct drm_connector_state;
 struct drm_display_mode;
 
 int drm_edid_to_sad(struct edid *edid, struct cea_sad **sads);
@@ -365,20 +359,34 @@ drm_load_edid_firmware(struct drm_connector *connector)
 }
 #endif
 
+bool drm_edid_are_equal(const struct edid *edid1, const struct edid *edid2);
+
 int
 drm_hdmi_avi_infoframe_from_display_mode(struct hdmi_avi_infoframe *frame,
-					 const struct drm_display_mode *mode,
-					 bool is_hdmi2_sink);
+					 const struct drm_connector *connector,
+					 const struct drm_display_mode *mode);
 int
 drm_hdmi_vendor_infoframe_from_display_mode(struct hdmi_vendor_infoframe *frame,
-					    struct drm_connector *connector,
+					    const struct drm_connector *connector,
 					    const struct drm_display_mode *mode);
+
+void
+drm_hdmi_avi_infoframe_colorspace(struct hdmi_avi_infoframe *frame,
+				  const struct drm_connector_state *conn_state);
+
+void
+drm_hdmi_avi_infoframe_bars(struct hdmi_avi_infoframe *frame,
+			    const struct drm_connector_state *conn_state);
+
 void
 drm_hdmi_avi_infoframe_quant_range(struct hdmi_avi_infoframe *frame,
+				   const struct drm_connector *connector,
 				   const struct drm_display_mode *mode,
-				   enum hdmi_quantization_range rgb_quant_range,
-				   bool rgb_quant_range_selectable,
-				   bool is_hdmi2_sink);
+				   enum hdmi_quantization_range rgb_quant_range);
+
+int
+drm_hdmi_infoframe_set_hdr_metadata(struct hdmi_drm_infoframe *frame,
+				    const struct drm_connector_state *conn_state);
 
 /**
  * drm_eld_mnl - Get ELD monitor name length in bytes.
@@ -484,10 +492,8 @@ int drm_add_edid_modes(struct drm_connector *connector, struct edid *edid);
 int drm_add_override_edid_modes(struct drm_connector *connector);
 
 u8 drm_match_cea_mode(const struct drm_display_mode *to_match);
-enum hdmi_picture_aspect drm_get_cea_aspect_ratio(const u8 video_code);
 bool drm_detect_hdmi_monitor(struct edid *edid);
 bool drm_detect_monitor_audio(struct edid *edid);
-bool drm_rgb_quant_range_selectable(struct edid *edid);
 enum hdmi_quantization_range
 drm_default_rgb_quant_range(const struct drm_display_mode *mode);
 int drm_add_modes_noedid(struct drm_connector *connector,
@@ -504,4 +510,8 @@ void drm_edid_get_monitor_name(struct edid *edid, char *name,
 struct drm_display_mode *drm_mode_find_dmt(struct drm_device *dev,
 					   int hsize, int vsize, int fresh,
 					   bool rb);
+struct drm_display_mode *
+drm_display_mode_from_cea_vic(struct drm_device *dev,
+			      u8 video_code);
+
 #endif /* __DRM_EDID_H__ */

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* xfrm_user.c: User interface to configure xfrm engine.
  *
  * Copyright (C) 2002 David S. Miller (davem@redhat.com)
@@ -1038,8 +1039,8 @@ static int xfrm_dump_sa(struct sk_buff *skb, struct netlink_callback *cb)
 		u8 proto = 0;
 		int err;
 
-		err = nlmsg_parse(cb->nlh, 0, attrs, XFRMA_MAX, xfrma_policy,
-				  NULL);
+		err = nlmsg_parse_deprecated(cb->nlh, 0, attrs, XFRMA_MAX,
+					     xfrma_policy, cb->extack);
 		if (err < 0)
 			return err;
 
@@ -2744,9 +2745,9 @@ static int xfrm_user_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh,
 		goto err;
 	}
 
-	err = nlmsg_parse(nlh, xfrm_msg_min[type], attrs,
-			  link->nla_max ? : XFRMA_MAX,
-			  link->nla_pol ? : xfrma_policy, extack);
+	err = nlmsg_parse_deprecated(nlh, xfrm_msg_min[type], attrs,
+				     link->nla_max ? : XFRMA_MAX,
+				     link->nla_pol ? : xfrma_policy, extack);
 	if (err < 0)
 		goto err;
 
@@ -2756,6 +2757,16 @@ static int xfrm_user_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh,
 	}
 
 	err = link->doit(skb, nlh, attrs);
+
+	/* We need to free skb allocated in xfrm_alloc_compat() before
+	 * returning from this function, because consume_skb() won't take
+	 * care of frag_list since netlink destructor sets
+	 * sbk->head to NULL. (see netlink_skb_destructor())
+	 */
+	if (skb_has_frag_list(skb)) {
+		kfree_skb(skb_shinfo(skb)->frag_list);
+		skb_shinfo(skb)->frag_list = NULL;
+	}
 
 err:
 	kvfree(nlh64);

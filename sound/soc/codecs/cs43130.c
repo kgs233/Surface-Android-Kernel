@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * cs43130.c  --  CS43130 ALSA Soc Audio driver
  *
  * Copyright 2017 Cirrus Logic, Inc.
  *
  * Authors: Li Xu <li.xu@cirrus.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -2362,7 +2359,9 @@ static const struct regmap_config cs43130_regmap = {
 	.precious_reg		= cs43130_precious_register,
 	.volatile_reg		= cs43130_volatile_register,
 	.cache_type		= REGCACHE_RBTREE,
-	.use_single_rw		= true, /* needed for regcache_sync */
+	/* needed for regcache_sync */
+	.use_single_read	= true,
+	.use_single_write	= true,
 };
 
 static u16 const cs43130_dc_threshold[CS43130_DC_THRESHOLD] = {

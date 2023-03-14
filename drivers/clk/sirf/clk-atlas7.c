@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Clock tree for CSR SiRFAtlas7
  *
  * Copyright (c) 2014 Cambridge Silicon Radio Limited, a CSR plc group company.
- *
- * Licensed under GPLv2 or later.
  */
 
 #include <linux/bitops.h>
@@ -1275,7 +1274,7 @@ atlas7_unit_clk_register(struct device *dev, const char *name,
 {
 	struct clk *clk;
 	struct clk_unit *unit;
-	struct clk_init_data init = {};
+	struct clk_init_data init;
 
 	unit = kzalloc(sizeof(*unit), GFP_KERNEL);
 	if (!unit)

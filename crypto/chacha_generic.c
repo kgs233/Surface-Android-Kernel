@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * ChaCha and XChaCha stream ciphers, including ChaCha20 (RFC7539)
  *
  * Copyright (C) 2015 Martin Willi
  * Copyright (C) 2018 Google LLC
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <asm/unaligned.h>
@@ -129,7 +125,7 @@ static void __exit chacha_generic_mod_fini(void)
 	crypto_unregister_skciphers(algs, ARRAY_SIZE(algs));
 }
 
-module_init(chacha_generic_mod_init);
+subsys_initcall(chacha_generic_mod_init);
 module_exit(chacha_generic_mod_fini);
 
 MODULE_LICENSE("GPL");

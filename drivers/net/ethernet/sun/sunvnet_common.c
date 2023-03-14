@@ -1088,7 +1088,7 @@ static inline int vnet_skb_map(struct ldc_channel *lp, struct sk_buff *skb,
 			vaddr = kmap_atomic(skb_frag_page(f));
 			blen = skb_frag_size(f);
 			blen += 8 - (blen & 7);
-			err = ldc_map_single(lp, vaddr + f->page_offset,
+			err = ldc_map_single(lp, vaddr + skb_frag_off(f),
 					     blen, cookies + nc, ncookies - nc,
 					     map_perm);
 			kunmap_atomic(vaddr);
@@ -1124,7 +1124,7 @@ static inline struct sk_buff *vnet_skb_shape(struct sk_buff *skb, int ncookies)
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
 		skb_frag_t *f = &skb_shinfo(skb)->frags[i];
 
-		docopy |= f->page_offset & 7;
+		docopy |= skb_frag_off(f) & 7;
 	}
 	if (((unsigned long)skb->data & 7) != VNET_PACKET_SKIP ||
 	    skb_tailroom(skb) < pad ||
@@ -1168,7 +1168,7 @@ static inline struct sk_buff *vnet_skb_shape(struct sk_buff *skb, int ncookies)
 			*(__sum16 *)(skb->data + offset) = 0;
 			csum = skb_copy_and_csum_bits(skb, start,
 						      nskb->data + start,
-						      skb->len - start, 0);
+						      skb->len - start);
 
 			/* add in the header checksums */
 			if (skb->protocol == htons(ETH_P_IP)) {
@@ -1223,7 +1223,7 @@ vnet_handle_offloads(struct vnet_port *port, struct sk_buff *skb,
 {
 	struct net_device *dev = VNET_PORT_TO_NET_DEVICE(port);
 	struct vio_dring_state *dr = &port->vio.drings[VIO_DRIVER_TX_RING];
-	struct sk_buff *segs;
+	struct sk_buff *segs, *curr, *next;
 	int maclen, datalen;
 	int status;
 	int gso_size, gso_type, gso_segs;
@@ -1282,11 +1282,8 @@ vnet_handle_offloads(struct vnet_port *port, struct sk_buff *skb,
 	skb_reset_mac_header(skb);
 
 	status = 0;
-	while (segs) {
-		struct sk_buff *curr = segs;
-
-		segs = segs->next;
-		curr->next = NULL;
+	skb_list_walk_safe(segs, curr, next) {
+		skb_mark_not_on_list(curr);
 		if (port->tso && curr->len > dev->mtu) {
 			skb_shinfo(curr)->gso_size = gso_size;
 			skb_shinfo(curr)->gso_type = gso_type;
@@ -1517,15 +1514,14 @@ out_dropped:
 	else if (port)
 		del_timer(&port->clean_timer);
 	rcu_read_unlock();
-	if (skb)
-		dev_kfree_skb(skb);
+	dev_kfree_skb(skb);
 	vnet_free_skbs(freeskbs);
 	dev->stats.tx_dropped++;
 	return NETDEV_TX_OK;
 }
 EXPORT_SYMBOL_GPL(sunvnet_start_xmit_common);
 
-void sunvnet_tx_timeout_common(struct net_device *dev)
+void sunvnet_tx_timeout_common(struct net_device *dev, unsigned int txqueue)
 {
 	/* XXX Implement me XXX */
 }

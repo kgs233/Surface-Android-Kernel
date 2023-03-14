@@ -1,7 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * U300 clock implementation
  * Copyright (C) 2007-2012 ST-Ericsson AB
- * License terms: GNU General Public License (GPL) version 2
  * Author: Linus Walleij <linus.walleij@stericsson.com>
  * Author: Jonas Aaberg <jonas.aberg@stericsson.com>
  */
@@ -699,7 +699,7 @@ syscon_clk_register(struct device *dev, const char *name,
 {
 	struct clk_hw *hw;
 	struct clk_syscon *sclk;
-	struct clk_init_data init = {};
+	struct clk_init_data init;
 	int ret;
 
 	sclk = kzalloc(sizeof(*sclk), GFP_KERNEL);
@@ -1118,7 +1118,7 @@ mclk_clk_register(struct device *dev, const char *name,
 {
 	struct clk_hw *hw;
 	struct clk_mclk *mclk;
-	struct clk_init_data init = {};
+	struct clk_init_data init;
 	int ret;
 
 	mclk = kzalloc(sizeof(*mclk), GFP_KERNEL);

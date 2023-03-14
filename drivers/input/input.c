@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * The input core
  *
  * Copyright (c) 1999-2002 Vojtech Pavlik
  */
 
-/*
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- */
 
 #define pr_fmt(fmt) KBUILD_BASENAME ": " fmt
 
@@ -28,6 +24,7 @@
 #include <linux/mutex.h>
 #include <linux/rcupdate.h>
 #include "input-compat.h"
+#include "input-poller.h"
 
 MODULE_AUTHOR("Vojtech Pavlik <vojtech@suse.cz>");
 MODULE_DESCRIPTION("Input core");
@@ -626,19 +623,30 @@ int input_open_device(struct input_handle *handle)
 
 	handle->open++;
 
-	if (!dev->users++ && dev->open)
-		retval = dev->open(dev);
+	if (dev->users++) {
+		/*
+		 * Device is already opened, so we can exit immediately and
+		 * report success.
+		 */
+		goto out;
+	}
 
-	if (retval) {
-		dev->users--;
-		if (!--handle->open) {
+	if (dev->open) {
+		retval = dev->open(dev);
+		if (retval) {
+			dev->users--;
+			handle->open--;
 			/*
 			 * Make sure we are not delivering any more events
 			 * through this handle
 			 */
 			synchronize_rcu();
+			goto out;
 		}
 	}
+
+	if (dev->poller)
+		input_dev_poller_start(dev->poller);
 
  out:
 	mutex_unlock(&dev->mutex);
@@ -678,8 +686,13 @@ void input_close_device(struct input_handle *handle)
 
 	__input_release_device(handle);
 
-	if (!--dev->users && dev->close)
-		dev->close(dev);
+	if (!--dev->users) {
+		if (dev->poller)
+			input_dev_poller_stop(dev->poller);
+
+		if (dev->close)
+			dev->close(dev);
+	}
 
 	if (!--handle->open) {
 		/*
@@ -1215,13 +1228,12 @@ static int input_proc_devices_open(struct inode *inode, struct file *file)
 	return seq_open(file, &input_devices_seq_ops);
 }
 
-static const struct file_operations input_devices_fileops = {
-	.owner		= THIS_MODULE,
-	.open		= input_proc_devices_open,
-	.poll		= input_proc_devices_poll,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= seq_release,
+static const struct proc_ops input_devices_proc_ops = {
+	.proc_open	= input_proc_devices_open,
+	.proc_poll	= input_proc_devices_poll,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= seq_release,
 };
 
 static void *input_handlers_seq_start(struct seq_file *seq, loff_t *pos)
@@ -1279,12 +1291,11 @@ static int input_proc_handlers_open(struct inode *inode, struct file *file)
 	return seq_open(file, &input_handlers_seq_ops);
 }
 
-static const struct file_operations input_handlers_fileops = {
-	.owner		= THIS_MODULE,
-	.open		= input_proc_handlers_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= seq_release,
+static const struct proc_ops input_handlers_proc_ops = {
+	.proc_open	= input_proc_handlers_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= seq_release,
 };
 
 static int __init input_proc_init(void)
@@ -1296,12 +1307,12 @@ static int __init input_proc_init(void)
 		return -ENOMEM;
 
 	entry = proc_create("devices", 0, proc_bus_input_dir,
-			    &input_devices_fileops);
+			    &input_devices_proc_ops);
 	if (!entry)
 		goto fail1;
 
 	entry = proc_create("handlers", 0, proc_bus_input_dir,
-			    &input_handlers_fileops);
+			    &input_handlers_proc_ops);
 	if (!entry)
 		goto fail2;
 
@@ -1531,6 +1542,7 @@ static const struct attribute_group *input_dev_attr_groups[] = {
 	&input_dev_attr_group,
 	&input_dev_id_attr_group,
 	&input_dev_caps_attr_group,
+	&input_poller_attribute_group,
 	NULL
 };
 
@@ -1540,6 +1552,7 @@ static void input_dev_release(struct device *device)
 
 	input_ff_destroy(dev);
 	input_mt_destroy_slots(dev);
+	kfree(dev->poller);
 	kfree(dev->absinfo);
 	kfree(dev->vals);
 	kfree(dev);
@@ -2211,6 +2224,9 @@ int input_register_device(struct input_dev *dev)
 
 	if (!dev->setkeycode)
 		dev->setkeycode = input_default_setkeycode;
+
+	if (dev->poller)
+		input_dev_poller_finalize(dev->poller);
 
 	error = device_add(&dev->dev);
 	if (error)

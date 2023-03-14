@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include "dm.h"
 #include "persistent-data/dm-transaction-manager.h"
 #include "persistent-data/dm-bitset.h"
@@ -1151,7 +1152,6 @@ static int metadata_get_stats(struct era_metadata *md, void *ptr)
 
 struct era {
 	struct dm_target *ti;
-	struct dm_target_callbacks callbacks;
 
 	struct dm_dev *metadata_dev;
 	struct dm_dev *origin_dev;
@@ -1289,7 +1289,7 @@ static void process_deferred_bios(struct era *era)
 			 */
 			if (commit_needed)
 				set_bit(get_block(era, bio), ws->bits);
-			generic_make_request(bio);
+			submit_bio_noacct(bio);
 		}
 		blk_finish_plug(&plug);
 	}
@@ -1396,24 +1396,12 @@ static void start_worker(struct era *era)
 static void stop_worker(struct era *era)
 {
 	atomic_set(&era->suspended, 1);
-	flush_workqueue(era->wq);
+	drain_workqueue(era->wq);
 }
 
 /*----------------------------------------------------------------
  * Target methods
  *--------------------------------------------------------------*/
-static int dev_is_congested(struct dm_dev *dev, int bdi_bits)
-{
-	struct request_queue *q = bdev_get_queue(dev->bdev);
-	return bdi_congested(q->backing_dev_info, bdi_bits);
-}
-
-static int era_is_congested(struct dm_target_callbacks *cb, int bdi_bits)
-{
-	struct era *era = container_of(cb, struct era, callbacks);
-	return dev_is_congested(era->origin_dev, bdi_bits);
-}
-
 static void era_destroy(struct era *era)
 {
 	if (era->md)
@@ -1532,8 +1520,6 @@ static int era_ctr(struct dm_target *ti, unsigned argc, char **argv)
 	ti->flush_supported = true;
 
 	ti->num_discard_bios = 1;
-	era->callbacks.congested_fn = era_is_congested;
-	dm_table_add_target_callbacks(ti->table, &era->callbacks);
 
 	return 0;
 }
@@ -1580,6 +1566,12 @@ static void era_postsuspend(struct dm_target *ti)
 	}
 
 	stop_worker(era);
+
+	r = metadata_commit(era->md);
+	if (r) {
+		DMERR("%s: metadata_commit failed", __func__);
+		/* FIXME: fail mode */
+	}
 }
 
 static int era_preresume(struct dm_target *ti)

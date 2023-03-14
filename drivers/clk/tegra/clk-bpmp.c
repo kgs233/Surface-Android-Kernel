@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2016 NVIDIA Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/clk-provider.h>
@@ -471,7 +468,7 @@ tegra_bpmp_clk_register(struct tegra_bpmp *bpmp,
 			unsigned int num_clocks)
 {
 	struct tegra_bpmp_clk *clk;
-	struct clk_init_data init = {};
+	struct clk_init_data init;
 	const char **parents;
 	unsigned int i;
 	int err;

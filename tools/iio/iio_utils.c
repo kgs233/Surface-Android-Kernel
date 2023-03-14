@@ -1,10 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* IIO - useful set of util functionality
  *
  * Copyright (c) 2008 Jonathan Cameron
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  */
 #include <string.h>
 #include <stdlib.h>
@@ -545,6 +542,10 @@ error_free_name:
 static int calc_digits(int num)
 {
 	int count = 0;
+
+	/* It takes a digit to represent zero */
+	if (!num)
+		return 1;
 
 	while (num != 0) {
 		num /= 10;

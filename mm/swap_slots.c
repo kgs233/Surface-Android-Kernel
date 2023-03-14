@@ -33,6 +33,7 @@
 #include <linux/vmalloc.h>
 #include <linux/mutex.h>
 #include <linux/mm.h>
+#include <trace/hooks/mm.h>
 
 static DEFINE_PER_CPU(struct swap_slots_cache, swp_slots);
 static bool	swap_slot_cache_active;
@@ -46,8 +47,7 @@ static void __drain_swap_slots_cache(unsigned int type);
 static void deactivate_swap_slots_cache(void);
 static void reactivate_swap_slots_cache(void);
 
-#define use_swap_slot_cache (swap_slot_cache_active && \
-		swap_slot_cache_enabled && swap_slot_cache_initialized)
+#define use_swap_slot_cache (swap_slot_cache_active && swap_slot_cache_enabled)
 #define SLOTS_CACHE 0x1
 #define SLOTS_CACHE_RET 0x2
 
@@ -55,6 +55,7 @@ static void deactivate_swap_slots_cache(void)
 {
 	mutex_lock(&swap_slots_cache_mutex);
 	swap_slot_cache_active = false;
+	trace_android_vh_swap_slot_cache_active(false);
 	__drain_swap_slots_cache(SLOTS_CACHE|SLOTS_CACHE_RET);
 	mutex_unlock(&swap_slots_cache_mutex);
 }
@@ -63,6 +64,7 @@ static void reactivate_swap_slots_cache(void)
 {
 	mutex_lock(&swap_slots_cache_mutex);
 	swap_slot_cache_active = true;
+	trace_android_vh_swap_slot_cache_active(true);
 	mutex_unlock(&swap_slots_cache_mutex);
 }
 
@@ -90,11 +92,17 @@ void reenable_swap_slots_cache_unlock(void)
 	mutex_unlock(&swap_slots_cache_enable_mutex);
 }
 
-static bool check_cache_active(void)
+bool is_swap_slot_cache_enabled(void)
+{
+	return swap_slot_cache_enabled;
+}
+EXPORT_SYMBOL_GPL(is_swap_slot_cache_enabled);
+
+bool check_cache_active(void)
 {
 	long pages;
 
-	if (!swap_slot_cache_enabled || !swap_slot_cache_initialized)
+	if (!swap_slot_cache_enabled)
 		return false;
 
 	pages = get_nr_swap_pages();
@@ -111,17 +119,26 @@ static bool check_cache_active(void)
 out:
 	return swap_slot_cache_active;
 }
+EXPORT_SYMBOL_GPL(check_cache_active);
 
 static int alloc_swap_slot_cache(unsigned int cpu)
 {
 	struct swap_slots_cache *cache;
 	swp_entry_t *slots, *slots_ret;
+	bool skip = false;
+	int ret = 0;
 
 	/*
 	 * Do allocation outside swap_slots_cache_mutex
 	 * as kvzalloc could trigger reclaim and get_swap_page,
 	 * which can lock swap_slots_cache_mutex.
 	 */
+	trace_android_rvh_alloc_swap_slot_cache(&per_cpu(swp_slots, cpu),
+		&ret, &skip);
+	trace_android_vh_alloc_swap_slot_cache(&per_cpu(swp_slots, cpu),
+		&ret, &skip);
+	if (skip)
+		return ret;
 	slots = kvcalloc(SWAP_SLOTS_CACHE_SIZE, sizeof(swp_entry_t),
 			 GFP_KERNEL);
 	if (!slots)
@@ -136,9 +153,16 @@ static int alloc_swap_slot_cache(unsigned int cpu)
 
 	mutex_lock(&swap_slots_cache_mutex);
 	cache = &per_cpu(swp_slots, cpu);
-	if (cache->slots || cache->slots_ret)
+	if (cache->slots || cache->slots_ret) {
 		/* cache already allocated */
-		goto out;
+		mutex_unlock(&swap_slots_cache_mutex);
+
+		kvfree(slots);
+		kvfree(slots_ret);
+
+		return 0;
+	}
+
 	if (!cache->lock_initialized) {
 		mutex_init(&cache->alloc_lock);
 		spin_lock_init(&cache->free_lock);
@@ -155,15 +179,8 @@ static int alloc_swap_slot_cache(unsigned int cpu)
 	 */
 	mb();
 	cache->slots = slots;
-	slots = NULL;
 	cache->slots_ret = slots_ret;
-	slots_ret = NULL;
-out:
 	mutex_unlock(&swap_slots_cache_mutex);
-	if (slots)
-		kvfree(slots);
-	if (slots_ret)
-		kvfree(slots_ret);
 	return 0;
 }
 
@@ -172,8 +189,15 @@ static void drain_slots_cache_cpu(unsigned int cpu, unsigned int type,
 {
 	struct swap_slots_cache *cache;
 	swp_entry_t *slots = NULL;
+	bool skip = false;
 
 	cache = &per_cpu(swp_slots, cpu);
+	trace_android_rvh_drain_slots_cache_cpu(cache, type,
+		free_slots, &skip);
+	trace_android_vh_drain_slots_cache_cpu(cache, type,
+		free_slots, &skip);
+	if (skip)
+		return;
 	if ((type & SLOTS_CACHE) && cache->slots) {
 		mutex_lock(&cache->alloc_lock);
 		swapcache_free_entries(cache->slots + cache->cur, cache->nr);
@@ -238,27 +262,24 @@ static int free_slot_cache(unsigned int cpu)
 	return 0;
 }
 
-int enable_swap_slots_cache(void)
+void enable_swap_slots_cache(void)
 {
-	int ret = 0;
-
 	mutex_lock(&swap_slots_cache_enable_mutex);
-	if (swap_slot_cache_initialized) {
-		__reenable_swap_slots_cache();
-		goto out_unlock;
+	if (!swap_slot_cache_initialized) {
+		int ret;
+
+		ret = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "swap_slots_cache",
+					alloc_swap_slot_cache, free_slot_cache);
+		if (WARN_ONCE(ret < 0, "Cache allocation failed (%s), operating "
+				       "without swap slots cache.\n", __func__))
+			goto out_unlock;
+
+		swap_slot_cache_initialized = true;
 	}
 
-	ret = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "swap_slots_cache",
-				alloc_swap_slot_cache, free_slot_cache);
-	if (WARN_ONCE(ret < 0, "Cache allocation failed (%s), operating "
-			       "without swap slots cache.\n", __func__))
-		goto out_unlock;
-
-	swap_slot_cache_initialized = true;
 	__reenable_swap_slots_cache();
 out_unlock:
 	mutex_unlock(&swap_slots_cache_enable_mutex);
-	return 0;
 }
 
 /* called with swap slot cache's alloc lock held */
@@ -278,8 +299,13 @@ static int refill_swap_slots_cache(struct swap_slots_cache *cache)
 int free_swap_slot(swp_entry_t entry)
 {
 	struct swap_slots_cache *cache;
+	bool skip = false;
 
 	cache = raw_cpu_ptr(&swp_slots);
+	trace_android_rvh_free_swap_slot(entry, cache, &skip);
+	trace_android_vh_free_swap_slot(entry, cache, &skip);
+	if (skip)
+		return 0;
 	if (likely(use_swap_slot_cache && cache->slots_ret)) {
 		spin_lock_irq(&cache->free_lock);
 		/* Swap slots cache may be deactivated before acquiring lock */
@@ -309,10 +335,15 @@ direct_free:
 
 swp_entry_t get_swap_page(struct page *page)
 {
-	swp_entry_t entry, *pentry;
+	swp_entry_t entry;
 	struct swap_slots_cache *cache;
-
+	bool found = false;
 	entry.val = 0;
+
+	trace_android_rvh_get_swap_page(page, &entry, raw_cpu_ptr(&swp_slots), &found);
+	trace_android_vh_get_swap_page(page, &entry, raw_cpu_ptr(&swp_slots), &found);
+	if (found)
+		goto out;
 
 	if (PageTransHuge(page)) {
 		if (IS_ENABLED(CONFIG_THP_SWAP))
@@ -336,13 +367,11 @@ swp_entry_t get_swap_page(struct page *page)
 		if (cache->slots) {
 repeat:
 			if (cache->nr) {
-				pentry = &cache->slots[cache->cur++];
-				entry = *pentry;
-				pentry->val = 0;
+				entry = cache->slots[cache->cur];
+				cache->slots[cache->cur++].val = 0;
 				cache->nr--;
-			} else {
-				if (refill_swap_slots_cache(cache))
-					goto repeat;
+			} else if (refill_swap_slots_cache(cache)) {
+				goto repeat;
 			}
 		}
 		mutex_unlock(&cache->alloc_lock);

@@ -1,23 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Digital Audio (PCM) abstract layer
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>
  *                   Abramo Bagnara <abramo@alsa-project.org>
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <linux/slab.h>
@@ -44,9 +29,6 @@
 #define trace_hw_ptr_error(substream, reason)
 #define trace_applptr(substream, prev, curr)
 #endif
-
-#define STRING_LENGTH_OF_INT 12
-#define MAX_USR_CTRL_CNT 128
 
 static int fill_silence_frames(struct snd_pcm_substream *substream,
 			       snd_pcm_uframes_t off, snd_pcm_uframes_t frames);
@@ -162,8 +144,13 @@ void __snd_pcm_xrun(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 
 	trace_xrun(substream);
-	if (runtime->tstamp_mode == SNDRV_PCM_TSTAMP_ENABLE)
-		snd_pcm_gettime(runtime, (struct timespec *)&runtime->status->tstamp);
+	if (runtime->tstamp_mode == SNDRV_PCM_TSTAMP_ENABLE) {
+		struct timespec64 tstamp;
+
+		snd_pcm_gettime(runtime, &tstamp);
+		runtime->status->tstamp.tv_sec = tstamp.tv_sec;
+		runtime->status->tstamp.tv_nsec = tstamp.tv_nsec;
+	}
 	snd_pcm_stop(substream, SNDRV_PCM_STATE_XRUN);
 	if (xrun_debug(substream, XRUN_DEBUG_BASIC)) {
 		char name[16];
@@ -218,12 +205,12 @@ int snd_pcm_update_state(struct snd_pcm_substream *substream,
 }
 
 static void update_audio_tstamp(struct snd_pcm_substream *substream,
-				struct timespec *curr_tstamp,
-				struct timespec *audio_tstamp)
+				struct timespec64 *curr_tstamp,
+				struct timespec64 *audio_tstamp)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	u64 audio_frames, audio_nsecs;
-	struct timespec driver_tstamp;
+	struct timespec64 driver_tstamp;
 
 	if (runtime->tstamp_mode != SNDRV_PCM_TSTAMP_ENABLE)
 		return;
@@ -247,18 +234,23 @@ static void update_audio_tstamp(struct snd_pcm_substream *substream,
 		}
 		audio_nsecs = div_u64(audio_frames * 1000000000LL,
 				runtime->rate);
-		*audio_tstamp = ns_to_timespec(audio_nsecs);
+		*audio_tstamp = ns_to_timespec64(audio_nsecs);
 	}
-	if (!timespec_equal(&runtime->status->audio_tstamp, audio_tstamp)) {
-		runtime->status->audio_tstamp = *audio_tstamp;
-		runtime->status->tstamp = *curr_tstamp;
+
+	if (runtime->status->audio_tstamp.tv_sec != audio_tstamp->tv_sec ||
+	    runtime->status->audio_tstamp.tv_nsec != audio_tstamp->tv_nsec) {
+		runtime->status->audio_tstamp.tv_sec = audio_tstamp->tv_sec;
+		runtime->status->audio_tstamp.tv_nsec = audio_tstamp->tv_nsec;
+		runtime->status->tstamp.tv_sec = curr_tstamp->tv_sec;
+		runtime->status->tstamp.tv_nsec = curr_tstamp->tv_nsec;
 	}
+
 
 	/*
 	 * re-take a driver timestamp to let apps detect if the reference tstamp
 	 * read by low-level hardware was provided with a delay
 	 */
-	snd_pcm_gettime(substream->runtime, (struct timespec *)&driver_tstamp);
+	snd_pcm_gettime(substream->runtime, &driver_tstamp);
 	runtime->driver_tstamp = driver_tstamp;
 }
 
@@ -271,8 +263,8 @@ static int snd_pcm_update_hw_ptr0(struct snd_pcm_substream *substream,
 	snd_pcm_sframes_t hdelta, delta;
 	unsigned long jdelta;
 	unsigned long curr_jiffies;
-	struct timespec curr_tstamp;
-	struct timespec audio_tstamp;
+	struct timespec64 curr_tstamp;
+	struct timespec64 audio_tstamp;
 	int crossed_boundary = 0;
 
 	old_hw_ptr = runtime->status->hw_ptr;
@@ -295,9 +287,9 @@ static int snd_pcm_update_hw_ptr0(struct snd_pcm_substream *substream,
 
 			/* re-test in case tstamp type is not supported in hardware and was demoted to DEFAULT */
 			if (runtime->audio_tstamp_report.actual_type == SNDRV_PCM_AUDIO_TSTAMP_TYPE_DEFAULT)
-				snd_pcm_gettime(runtime, (struct timespec *)&curr_tstamp);
+				snd_pcm_gettime(runtime, &curr_tstamp);
 		} else
-			snd_pcm_gettime(runtime, (struct timespec *)&curr_tstamp);
+			snd_pcm_gettime(runtime, &curr_tstamp);
 	}
 
 	if (pos == SNDRV_PCM_POS_XRUN) {
@@ -498,7 +490,7 @@ void snd_pcm_set_ops(struct snd_pcm *pcm, int direction,
 EXPORT_SYMBOL(snd_pcm_set_ops);
 
 /**
- * snd_pcm_sync - set the PCM sync id
+ * snd_pcm_set_sync - set the PCM sync id
  * @substream: the pcm substream
  *
  * Sets the PCM sync identifier for the card.
@@ -1461,7 +1453,7 @@ EXPORT_SYMBOL(snd_pcm_hw_constraint_step);
 
 static int snd_pcm_hw_rule_pow2(struct snd_pcm_hw_params *params, struct snd_pcm_hw_rule *rule)
 {
-	static unsigned int pow2_sizes[] = {
+	static const unsigned int pow2_sizes[] = {
 		1<<0, 1<<1, 1<<2, 1<<3, 1<<4, 1<<5, 1<<6, 1<<7,
 		1<<8, 1<<9, 1<<10, 1<<11, 1<<12, 1<<13, 1<<14, 1<<15,
 		1<<16, 1<<17, 1<<18, 1<<19, 1<<20, 1<<21, 1<<22, 1<<23,
@@ -2180,6 +2172,14 @@ snd_pcm_sframes_t __snd_pcm_lib_xfer(struct snd_pcm_substream *substream,
 	if (err < 0)
 		goto _end_unlock;
 
+	runtime->twake = runtime->control->avail_min ? : 1;
+	if (runtime->status->state == SNDRV_PCM_STATE_RUNNING)
+		snd_pcm_update_hw_ptr(substream);
+
+	/*
+	 * If size < start_threshold, wait indefinitely. Another
+	 * thread may start capture
+	 */
 	if (!is_playback &&
 	    runtime->status->state == SNDRV_PCM_STATE_PREPARED &&
 	    size >= runtime->start_threshold) {
@@ -2188,10 +2188,8 @@ snd_pcm_sframes_t __snd_pcm_lib_xfer(struct snd_pcm_substream *substream,
 			goto _end_unlock;
 	}
 
-	runtime->twake = runtime->control->avail_min ? : 1;
-	if (runtime->status->state == SNDRV_PCM_STATE_RUNNING)
-		snd_pcm_update_hw_ptr(substream);
 	avail = snd_pcm_avail(substream);
+
 	while (size > 0) {
 		snd_pcm_uframes_t frames, appl_ptr, appl_ofs;
 		snd_pcm_uframes_t cont;
@@ -2220,9 +2218,8 @@ snd_pcm_sframes_t __snd_pcm_lib_xfer(struct snd_pcm_substream *substream,
 		if (frames > cont)
 			frames = cont;
 		if (snd_BUG_ON(!frames)) {
-			runtime->twake = 0;
-			snd_pcm_stream_unlock_irq(substream);
-			return -EINVAL;
+			err = -EINVAL;
+			goto _end_unlock;
 		}
 		if (!atomic_inc_unless_negative(&runtime->buffer_accessing)) {
 			err = -EBUSY;
@@ -2327,7 +2324,6 @@ static int pcm_chmap_ctl_info(struct snd_kcontrol *kcontrol,
 	struct snd_pcm_chmap *info = snd_kcontrol_chip(kcontrol);
 
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
-	uinfo->count = 0;
 	uinfo->count = info->max_channels;
 	uinfo->value.integer.min = 0;
 	uinfo->value.integer.max = SNDRV_CHMAP_LAST;
@@ -2351,7 +2347,7 @@ static int pcm_chmap_ctl_get(struct snd_kcontrol *kcontrol,
 	if (!substream)
 		return -ENODEV;
 	memset(ucontrol->value.integer.value, 0,
-	       sizeof(ucontrol->value.integer.value));
+	       sizeof(long) * info->max_channels);
 	if (!substream->runtime)
 		return 0; /* no channels set */
 	for (map = info->chmap; map->channels; map++) {
@@ -2419,24 +2415,6 @@ static void pcm_chmap_ctl_private_free(struct snd_kcontrol *kcontrol)
 	kfree(info);
 }
 
-static int pcm_volume_ctl_info(struct snd_kcontrol *kcontrol,
-				struct snd_ctl_elem_info *uinfo)
-{
-	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
-	uinfo->count = 1;
-	uinfo->value.integer.min = 0;
-	uinfo->value.integer.max = 0x2000;
-	return 0;
-}
-
-static void pcm_volume_ctl_private_free(struct snd_kcontrol *kcontrol)
-{
-	struct snd_pcm_volume *info = snd_kcontrol_chip(kcontrol);
-
-	info->pcm->streams[info->stream].vol_kctl = NULL;
-	kfree(info);
-}
-
 /**
  * snd_pcm_add_chmap_ctls - create channel-mapping control elements
  * @pcm: the assigned PCM instance
@@ -2498,166 +2476,3 @@ int snd_pcm_add_chmap_ctls(struct snd_pcm *pcm, int stream,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(snd_pcm_add_chmap_ctls);
-
-/**
- * snd_pcm_add_volume_ctls - create volume control elements
- * @pcm: the assigned PCM instance
- * @stream: stream direction
- * @max_length: the max length of the volume parameter of stream
- * @private_value: the value passed to each kcontrol's private_value field
- * @info_ret: store struct snd_pcm_volume instance if non-NULL
- *
- * Create volume control elements assigned to the given PCM stream(s).
- * Returns zero if succeed, or a negative error value.
- */
-int snd_pcm_add_volume_ctls(struct snd_pcm *pcm, int stream,
-			   const struct snd_pcm_volume_elem *volume,
-			   int max_length,
-			   unsigned long private_value,
-			   struct snd_pcm_volume **info_ret)
-{
-	struct snd_pcm_volume *info;
-	struct snd_kcontrol_new knew = {
-		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
-		.access = SNDRV_CTL_ELEM_ACCESS_TLV_READ |
-			SNDRV_CTL_ELEM_ACCESS_READWRITE,
-		.info = pcm_volume_ctl_info,
-	};
-	int err;
-	int size;
-
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
-	if (!info)
-		return -ENOMEM;
-	info->pcm = pcm;
-	info->stream = stream;
-	info->volume = volume;
-	info->max_length = max_length;
-	size = sizeof("Playback ") + sizeof(" Volume") +
-		STRING_LENGTH_OF_INT*sizeof(char) + 1;
-	knew.name = kzalloc(size, GFP_KERNEL);
-	if (!knew.name) {
-		kfree(info);
-		return -ENOMEM;
-	}
-	if (stream == SNDRV_PCM_STREAM_PLAYBACK)
-		snprintf((char *)knew.name, size, "%s %d %s",
-			"Playback", pcm->device, "Volume");
-	else
-		snprintf((char *)knew.name, size, "%s %d %s",
-			"Capture", pcm->device, "Volume");
-	knew.device = pcm->device;
-	knew.count = pcm->streams[stream].substream_count;
-	knew.private_value = private_value;
-	info->kctl = snd_ctl_new1(&knew, info);
-	if (!info->kctl) {
-		kfree(info);
-		kfree(knew.name);
-		return -ENOMEM;
-	}
-	info->kctl->private_free = pcm_volume_ctl_private_free;
-	err = snd_ctl_add(pcm->card, info->kctl);
-	if (err < 0) {
-		kfree(info);
-		kfree(knew.name);
-		return -ENOMEM;
-	}
-	pcm->streams[stream].vol_kctl = info->kctl;
-	if (info_ret)
-		*info_ret = info;
-	kfree(knew.name);
-	return 0;
-}
-EXPORT_SYMBOL(snd_pcm_add_volume_ctls);
-
-static int pcm_usr_ctl_info(struct snd_kcontrol *kcontrol,
-			    struct snd_ctl_elem_info *uinfo)
-{
-	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
-	uinfo->count = MAX_USR_CTRL_CNT;
-	uinfo->value.integer.min = 0;
-	uinfo->value.integer.max = INT_MAX;
-	return 0;
-}
-
-static void pcm_usr_ctl_private_free(struct snd_kcontrol *kcontrol)
-{
-	struct snd_pcm_usr *info = snd_kcontrol_chip(kcontrol);
-
-	info->pcm->streams[info->stream].usr_kctl = NULL;
-	kfree(info);
-}
-
-/**
- * snd_pcm_add_usr_ctls - create user control elements
- * @pcm: the assigned PCM instance
- * @stream: stream direction
- * @max_length: the max length of the user parameter of stream
- * @private_value: the value passed to each kcontrol's private_value field
- * @info_ret: store struct snd_pcm_usr instance if non-NULL
- *
- * Create usr control elements assigned to the given PCM stream(s).
- * Returns zero if succeed, or a negative error value.
- */
-int snd_pcm_add_usr_ctls(struct snd_pcm *pcm, int stream,
-			 const struct snd_pcm_usr_elem *usr,
-			 int max_length, int max_kctrl_str_len,
-			 unsigned long private_value,
-			 struct snd_pcm_usr **info_ret)
-{
-	struct snd_pcm_usr *info;
-	struct snd_kcontrol_new knew = {
-		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
-		.access = SNDRV_CTL_ELEM_ACCESS_READWRITE,
-		.info = pcm_usr_ctl_info,
-	};
-	int err;
-	char *buf;
-
-	info = kzalloc(sizeof(*info), GFP_KERNEL);
-	if (!info)
-		return -ENOMEM;
-
-	info->pcm = pcm;
-	info->stream = stream;
-	info->usr = usr;
-	info->max_length = max_length;
-	buf = kzalloc(max_kctrl_str_len, GFP_KERNEL);
-	if (!buf) {
-		pr_err("%s: buffer allocation failed\n", __func__);
-		kfree(info);
-		return -ENOMEM;
-	}
-	knew.name = buf;
-	if (stream == SNDRV_PCM_STREAM_PLAYBACK)
-		snprintf(buf, max_kctrl_str_len, "%s %d %s",
-			"Playback", pcm->device, "User kcontrol");
-	else
-		snprintf(buf, max_kctrl_str_len, "%s %d %s",
-			"Capture", pcm->device, "User kcontrol");
-	knew.device = pcm->device;
-	knew.count = pcm->streams[stream].substream_count;
-	knew.private_value = private_value;
-	info->kctl = snd_ctl_new1(&knew, info);
-	if (!info->kctl) {
-		kfree(info);
-		kfree(knew.name);
-		pr_err("%s: snd_ctl_new failed\n", __func__);
-		return -ENOMEM;
-	}
-	info->kctl->private_free = pcm_usr_ctl_private_free;
-	err = snd_ctl_add(pcm->card, info->kctl);
-	if (err < 0) {
-		kfree(info);
-		kfree(knew.name);
-		pr_err("%s: snd_ctl_add failed:%d\n", __func__,
-			err);
-		return -ENOMEM;
-	}
-	pcm->streams[stream].usr_kctl = info->kctl;
-	if (info_ret)
-		*info_ret = info;
-	kfree(knew.name);
-	return 0;
-}
-EXPORT_SYMBOL(snd_pcm_add_usr_ctls);
