@@ -29,6 +29,16 @@ static int so_priority;
 module_param(so_priority, int, 0644);
 MODULE_PARM_DESC(so_priority, "nvmet tcp socket optimize priority");
 
+/* Define a time period (in usecs) that io_work() shall sample an activated
+ * queue before determining it to be idle.  This optional module behavior
+ * can enable NIC solutions that support socket optimized packet processing
+ * using advanced interrupt moderation techniques.
+ */
+static int idle_poll_period_usecs;
+module_param(idle_poll_period_usecs, int, 0644);
+MODULE_PARM_DESC(idle_poll_period_usecs,
+		"nvmet tcp io_work poll till idle time period in usecs");
+
 #define NVMET_TCP_RECV_BUDGET		8
 #define NVMET_TCP_SEND_BUDGET		8
 #define NVMET_TCP_IO_WORK_BUDGET	64
@@ -118,6 +128,8 @@ struct nvmet_tcp_queue {
 	bool			data_digest;
 	struct ahash_request	*snd_hash;
 	struct ahash_request	*rcv_hash;
+
+	unsigned long           poll_end;
 
 	spinlock_t		state_lock;
 	enum nvmet_tcp_queue_state state;
@@ -1246,9 +1258,26 @@ static void nvmet_tcp_schedule_release_queue(struct nvmet_tcp_queue *queue)
 	spin_lock(&queue->state_lock);
 	if (queue->state != NVMET_TCP_Q_DISCONNECTING) {
 		queue->state = NVMET_TCP_Q_DISCONNECTING;
-		schedule_work(&queue->release_work);
+		queue_work(nvmet_wq, &queue->release_work);
 	}
 	spin_unlock(&queue->state_lock);
+}
+
+static inline void nvmet_tcp_arm_queue_deadline(struct nvmet_tcp_queue *queue)
+{
+	queue->poll_end = jiffies + usecs_to_jiffies(idle_poll_period_usecs);
+}
+
+static bool nvmet_tcp_check_queue_deadline(struct nvmet_tcp_queue *queue,
+		int ops)
+{
+	if (!idle_poll_period_usecs)
+		return false;
+
+	if (ops)
+		nvmet_tcp_arm_queue_deadline(queue);
+
+	return !time_after(jiffies, queue->poll_end);
 }
 
 static void nvmet_tcp_io_work(struct work_struct *w)
@@ -1276,9 +1305,10 @@ static void nvmet_tcp_io_work(struct work_struct *w)
 	} while (pending && ops < NVMET_TCP_IO_WORK_BUDGET);
 
 	/*
-	 * We exahusted our budget, requeue our selves
+	 * Requeue the worker if idle deadline period is in progress or any
+	 * ops activity was recorded during the do-while loop above.
 	 */
-	if (pending)
+	if (nvmet_tcp_check_queue_deadline(queue, ops) || pending)
 		queue_work_on(queue_cpu(queue), nvmet_tcp_wq, &queue->io_work);
 }
 
@@ -1541,6 +1571,8 @@ static int nvmet_tcp_set_queue_sock(struct nvmet_tcp_queue *queue)
 		sock->sk->sk_state_change = nvmet_tcp_state_change;
 		queue->write_space = sock->sk->sk_write_space;
 		sock->sk->sk_write_space = nvmet_tcp_write_space;
+		if (idle_poll_period_usecs)
+			nvmet_tcp_arm_queue_deadline(queue);
 		queue_work_on(queue_cpu(queue), nvmet_tcp_wq, &queue->io_work);
 	}
 	write_unlock_bh(&sock->sk->sk_callback_lock);
@@ -1640,7 +1672,7 @@ static void nvmet_tcp_listen_data_ready(struct sock *sk)
 		goto out;
 
 	if (sk->sk_state == TCP_LISTEN)
-		schedule_work(&port->accept_work);
+		queue_work(nvmet_wq, &port->accept_work);
 out:
 	read_unlock_bh(&sk->sk_callback_lock);
 }
@@ -1771,7 +1803,7 @@ static u16 nvmet_tcp_install_queue(struct nvmet_sq *sq)
 
 	if (sq->qid == 0) {
 		/* Let inflight controller teardown complete */
-		flush_scheduled_work();
+		flush_workqueue(nvmet_wq);
 	}
 
 	queue->nr_cmds = sq->size * 2;
@@ -1833,12 +1865,12 @@ static void __exit nvmet_tcp_exit(void)
 
 	nvmet_unregister_transport(&nvmet_tcp_ops);
 
-	flush_scheduled_work();
+	flush_workqueue(nvmet_wq);
 	mutex_lock(&nvmet_tcp_queue_mutex);
 	list_for_each_entry(queue, &nvmet_tcp_queue_list, queue_list)
 		kernel_sock_shutdown(queue->sock, SHUT_RDWR);
 	mutex_unlock(&nvmet_tcp_queue_mutex);
-	flush_scheduled_work();
+	flush_workqueue(nvmet_wq);
 
 	destroy_workqueue(nvmet_tcp_wq);
 }

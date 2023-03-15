@@ -62,7 +62,7 @@ static void j1939_can_recv(struct sk_buff *iskb, void *data)
 	skb_pull(skb, J1939_CAN_HDR);
 
 	/* fix length, set to dlc, with 8 maximum */
-	skb_trim(skb, min_t(uint8_t, cf->can_dlc, 8));
+	skb_trim(skb, min_t(uint8_t, cf->len, 8));
 
 	/* set addr */
 	skcb = j1939_skb_to_cb(skb);
@@ -332,9 +332,6 @@ int j1939_send_one(struct j1939_priv *priv, struct sk_buff *skb)
 	/* re-claim the CAN_HDR from the SKB */
 	cf = skb_push(skb, J1939_CAN_HDR);
 
-	/* initialize header structure */
-	memset(cf, 0, J1939_CAN_HDR);
-
 	/* make it a full can frame again */
 	skb_put(skb, J1939_CAN_FTR + (8 - dlc));
 
@@ -346,7 +343,7 @@ int j1939_send_one(struct j1939_priv *priv, struct sk_buff *skb)
 		canid |= skcb->addr.da << 8;
 
 	cf->can_id = canid;
-	cf->can_dlc = dlc;
+	cf->len = dlc;
 
 	return can_send(skb, 1);
 

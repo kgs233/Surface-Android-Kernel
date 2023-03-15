@@ -35,9 +35,11 @@
 #include <linux/interrupt.h>
 #include <linux/percpu.h>
 #include <linux/slab.h>
+#include <linux/syscore_ops.h>
 #include <linux/irqchip.h>
 #include <linux/irqchip/chained_irq.h>
 #include <linux/irqchip/arm-gic.h>
+#include <trace/hooks/gic.h>
 
 #include <asm/cputype.h>
 #include <asm/irq.h>
@@ -121,7 +123,7 @@ static DEFINE_STATIC_KEY_TRUE(supports_deactivate_key);
 
 static struct gic_chip_data gic_data[CONFIG_ARM_GIC_MAX_NR] __read_mostly;
 
-static struct gic_kvm_info gic_v2_kvm_info;
+static struct gic_kvm_info gic_v2_kvm_info __initdata;
 
 static DEFINE_PER_CPU(u32, sgi_intid);
 
@@ -377,8 +379,9 @@ static void gic_handle_cascade_irq(struct irq_desc *desc)
 {
 	struct gic_chip_data *chip_data = irq_desc_get_handler_data(desc);
 	struct irq_chip *chip = irq_desc_get_chip(desc);
-	unsigned int cascade_irq, gic_irq;
+	unsigned int gic_irq;
 	unsigned long status;
+	int ret;
 
 	chained_irq_enter(chip, desc);
 
@@ -388,17 +391,34 @@ static void gic_handle_cascade_irq(struct irq_desc *desc)
 	if (gic_irq == GICC_INT_SPURIOUS)
 		goto out;
 
-	cascade_irq = irq_find_mapping(chip_data->domain, gic_irq);
-	if (unlikely(gic_irq < 32 || gic_irq > 1020)) {
+	isb();
+	ret = generic_handle_domain_irq(chip_data->domain, gic_irq);
+	if (unlikely(ret))
 		handle_bad_irq(desc);
-	} else {
-		isb();
-		generic_handle_irq(cascade_irq);
-	}
-
  out:
 	chained_irq_exit(chip, desc);
 }
+
+#ifdef CONFIG_PM
+void gic_v2_resume(void)
+{
+	trace_android_vh_gic_v2_resume(gic_data[0].domain, gic_data_dist_base(&gic_data[0]));
+}
+EXPORT_SYMBOL_GPL(gic_v2_resume);
+
+static struct syscore_ops gic_v2_syscore_ops = {
+	.resume = gic_v2_resume,
+};
+
+static void gic_v2_syscore_init(void)
+{
+	register_syscore_ops(&gic_v2_syscore_ops);
+}
+
+#else
+static inline void gic_v2_syscore_init(void) { }
+void gic_v2_resume(void) { }
+#endif
 
 static const struct irq_chip gic_chip = {
 	.irq_mask		= gic_mask_irq,
@@ -818,6 +838,8 @@ static int gic_set_affinity(struct irq_data *d, const struct cpumask *mask_val,
 		writeb_relaxed(gic_cpu_map[cpu], reg);
 	irq_data_update_effective_affinity(d, cpumask_of(cpu));
 
+	trace_android_vh_gic_set_affinity(d, mask_val, force, gic_cpu_map, reg);
+
 	return IRQ_SET_MASK_OK_DONE;
 }
 
@@ -997,7 +1019,7 @@ void gic_migrate_target(unsigned int new_cpu_id)
 /*
  * gic_get_sgir_physaddr - get the physical address for the SGI register
  *
- * REturn the physical address of the SGI register to be used
+ * Return the physical address of the SGI register to be used
  * by some early assembly code when the kernel is not yet available.
  */
 static unsigned long gic_dist_physaddr;
@@ -1029,13 +1051,7 @@ static int gic_irq_domain_map(struct irq_domain *d, unsigned int irq,
 	struct irq_data *irqd = irq_desc_get_irq_data(irq_to_desc(irq));
 
 	switch (hw) {
-	case 0 ... 15:
-		irq_set_percpu_devid(irq);
-		irq_domain_set_info(d, irq, hw, &gic->chip, d->host_data,
-				    handle_percpu_devid_fasteoi_ipi,
-				    NULL, NULL);
-		break;
-	case 16 ... 31:
+	case 0 ... 31:
 		irq_set_percpu_devid(irq);
 		irq_domain_set_info(d, irq, hw, &gic->chip, d->host_data,
 				    handle_percpu_devid_irq, NULL, NULL);
@@ -1246,6 +1262,8 @@ static int gic_init_bases(struct gic_chip_data *gic,
 	ret = gic_pm_init(gic);
 	if (ret)
 		goto error;
+
+	gic_v2_syscore_init();
 
 	return 0;
 
@@ -1513,7 +1531,7 @@ static void __init gic_of_setup_kvm_info(struct device_node *node)
 		return;
 
 	if (static_branch_likely(&supports_deactivate_key))
-		gic_set_kvm_info(&gic_v2_kvm_info);
+		vgic_set_kvm_info(&gic_v2_kvm_info);
 }
 
 int __init
@@ -1680,7 +1698,7 @@ static void __init gic_acpi_setup_kvm_info(void)
 
 	gic_v2_kvm_info.maint_irq = irq;
 
-	gic_set_kvm_info(&gic_v2_kvm_info);
+	vgic_set_kvm_info(&gic_v2_kvm_info);
 }
 
 static int __init gic_v2_acpi_init(union acpi_subtable_headers *header,

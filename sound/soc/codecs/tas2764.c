@@ -386,13 +386,20 @@ static int tas2764_set_dai_tdm_slot(struct snd_soc_dai *dai,
 	if (tx_mask == 0 || rx_mask != 0)
 		return -EINVAL;
 
-	left_slot = __ffs(tx_mask);
-	tx_mask &= ~(1 << left_slot);
-	if (tx_mask == 0) {
-		right_slot = left_slot;
+	if (slots == 1) {
+		if (tx_mask != 1)
+			return -EINVAL;
+		left_slot = 0;
+		right_slot = 0;
 	} else {
-		right_slot = __ffs(tx_mask);
-		tx_mask &= ~(1 << right_slot);
+		left_slot = __ffs(tx_mask);
+		tx_mask &= ~(1 << left_slot);
+		if (tx_mask == 0) {
+			right_slot = left_slot;
+		} else {
+			right_slot = __ffs(tx_mask);
+			tx_mask &= ~(1 << right_slot);
+		}
 	}
 
 	if (tx_mask != 0 || left_slot >= slots || right_slot >= slots)
@@ -439,7 +446,7 @@ static int tas2764_set_dai_tdm_slot(struct snd_soc_dai *dai,
 	return 0;
 }
 
-static struct snd_soc_dai_ops tas2764_dai_ops = {
+static const struct snd_soc_dai_ops tas2764_dai_ops = {
 	.mute_stream = tas2764_mute,
 	.hw_params  = tas2764_hw_params,
 	.set_fmt    = tas2764_set_fmt,
@@ -472,7 +479,7 @@ static struct snd_soc_dai_driver tas2764_dai_driver[] = {
 			.formats = TAS2764_FORMATS,
 		},
 		.ops = &tas2764_dai_ops,
-		.symmetric_rates = 1,
+		.symmetric_rate = 1,
 	},
 };
 

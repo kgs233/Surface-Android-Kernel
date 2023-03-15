@@ -2668,6 +2668,7 @@ static int handle_tx_event(struct xhci_hcd *xhci,
 			xhci_warn_ratelimited(xhci,
 					      "WARN Successful completion on short TX for slot %u ep %u: needs XHCI_TRUST_TX_LENGTH quirk?\n",
 					      slot_id, ep_index);
+		break;
 	case COMP_SHORT_PACKET:
 		break;
 	/* Completion codes for endpoint stopped state */
@@ -2966,7 +2967,7 @@ err_out:
  * Returns >0 for "possibly more events to process" (caller should call again),
  * otherwise 0 if done.  In future, <0 returns should indicate error code.
  */
-int xhci_handle_event(struct xhci_hcd *xhci)
+static int xhci_handle_event(struct xhci_hcd *xhci)
 {
 	union xhci_trb *event;
 	int update_ptrs = 1;
@@ -3035,14 +3036,13 @@ int xhci_handle_event(struct xhci_hcd *xhci)
 	 */
 	return 1;
 }
-EXPORT_SYMBOL_GPL(xhci_handle_event);
 
 /*
  * Update Event Ring Dequeue Pointer:
  * - When all events have finished
  * - To avoid "Event Ring Full Error" condition
  */
-void xhci_update_erst_dequeue(struct xhci_hcd *xhci,
+static void xhci_update_erst_dequeue(struct xhci_hcd *xhci,
 		union xhci_trb *event_ring_deq)
 {
 	u64 temp_64;
@@ -3072,16 +3072,6 @@ void xhci_update_erst_dequeue(struct xhci_hcd *xhci,
 	temp_64 |= ERST_EHB;
 	xhci_write_64(xhci, temp_64, &xhci->ir_set->erst_dequeue);
 }
-EXPORT_SYMBOL_GPL(xhci_update_erst_dequeue);
-
-static irqreturn_t xhci_vendor_queue_irq_work(struct xhci_hcd *xhci)
-{
-	struct xhci_vendor_ops *ops = xhci_vendor_get_ops(xhci);
-
-	if (ops && ops->queue_irq_work)
-		return ops->queue_irq_work(xhci);
-	return IRQ_NONE;
-}
 
 /*
  * xHCI spec says we can get an interrupt, and if the HC has an error condition,
@@ -3093,12 +3083,11 @@ irqreturn_t xhci_irq(struct usb_hcd *hcd)
 	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
 	union xhci_trb *event_ring_deq;
 	irqreturn_t ret = IRQ_NONE;
-	unsigned long flags;
 	u64 temp_64;
 	u32 status;
 	int event_loop = 0;
 
-	spin_lock_irqsave(&xhci->lock, flags);
+	spin_lock(&xhci->lock);
 	/* Check if the xHC generated the interrupt, or the irq is shared */
 	status = readl(&xhci->op_regs->status);
 	if (status == ~(u32)0) {
@@ -3116,10 +3105,6 @@ irqreturn_t xhci_irq(struct usb_hcd *hcd)
 		ret = IRQ_HANDLED;
 		goto out;
 	}
-
-	ret = xhci_vendor_queue_irq_work(xhci);
-	if (ret == IRQ_HANDLED)
-		goto out;
 
 	/*
 	 * Clear the op reg interrupt status first,
@@ -3160,6 +3145,10 @@ irqreturn_t xhci_irq(struct usb_hcd *hcd)
 		xhci_update_erst_dequeue(xhci, event_ring_deq);
 		event_ring_deq = xhci->event_ring->dequeue;
 
+		/* ring is half-full, force isoc trbs to interrupt more often */
+		if (xhci->isoc_bei_interval > AVOID_BEI_INTERVAL_MIN)
+			xhci->isoc_bei_interval = xhci->isoc_bei_interval / 2;
+
 		event_loop = 0;
 	}
 
@@ -3167,7 +3156,7 @@ irqreturn_t xhci_irq(struct usb_hcd *hcd)
 	ret = IRQ_HANDLED;
 
 out:
-	spin_unlock_irqrestore(&xhci->lock, flags);
+	spin_unlock(&xhci->lock);
 
 	return ret;
 }
@@ -3231,6 +3220,7 @@ static int prepare_ring(struct xhci_hcd *xhci, struct xhci_ring *ep_ring,
 		return -EINVAL;
 	case EP_STATE_HALTED:
 		xhci_dbg(xhci, "WARN halted endpoint, queueing URB anyway.\n");
+		break;
 	case EP_STATE_STOPPED:
 	case EP_STATE_RUNNING:
 		break;
@@ -3611,7 +3601,7 @@ int xhci_queue_bulk_tx(struct xhci_hcd *xhci, gfp_t mem_flags,
 
 	full_len = urb->transfer_buffer_length;
 	/* If we have scatter/gather list, we use it. */
-	if (urb->num_sgs) {
+	if (urb->num_sgs && !(urb->transfer_flags & URB_DMA_MAP_SINGLE)) {
 		num_sgs = urb->num_mapped_sgs;
 		sg = urb->sg;
 		addr = (u64) sg_dma_address(sg);
@@ -4039,7 +4029,7 @@ static bool trb_block_event_intr(struct xhci_hcd *xhci, int num_tds, int i)
 	 * generate an event at least every 8th TD to clear the event ring
 	 */
 	if (i && xhci->quirks & XHCI_AVOID_BEI)
-		return !!(i % 8);
+		return !!(i % xhci->isoc_bei_interval);
 
 	return true;
 }

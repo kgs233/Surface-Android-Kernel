@@ -23,9 +23,11 @@
 
 #include <asm/cpuidle.h>
 #include <asm/cputype.h>
+#include <asm/hypervisor.h>
 #include <asm/system_misc.h>
 #include <asm/smp_plat.h>
 #include <asm/suspend.h>
+#include <trace/hooks/psci.h>
 
 /*
  * While a 64-bit OS can make calls with SMC32 calling conventions, for some
@@ -51,6 +53,12 @@ static enum arm_smccc_conduit psci_conduit = SMCCC_CONDUIT_NONE;
 
 bool psci_tos_resident_on(int cpu)
 {
+	bool resident = false;
+
+	trace_android_rvh_psci_tos_resident_on(cpu, &resident);
+	if (resident)
+		return resident;
+
 	return cpu == resident_cpu;
 }
 
@@ -138,7 +146,7 @@ static int psci_to_linux_errno(int errno)
 		return -EINVAL;
 	case PSCI_RET_DENIED:
 		return -EPERM;
-	};
+	}
 
 	return -EINVAL;
 }
@@ -168,6 +176,11 @@ int psci_set_osi_mode(bool enable)
 static int __psci_cpu_suspend(u32 fn, u32 state, unsigned long entry_point)
 {
 	int err;
+	bool deny = false;
+
+	trace_android_rvh_psci_cpu_suspend(state, &deny);
+	if (deny)
+		return -EPERM;
 
 	err = invoke_psci_fn(fn, state, entry_point, 0);
 	return psci_to_linux_errno(err);
@@ -333,18 +346,24 @@ static int __init psci_features(u32 psci_func_id)
 static int psci_suspend_finisher(unsigned long state)
 {
 	u32 power_state = state;
+	phys_addr_t pa_cpu_resume = __pa_symbol(function_nocfi(cpu_resume));
 
-	return psci_ops.cpu_suspend(power_state, __pa_function(cpu_resume));
+	return psci_ops.cpu_suspend(power_state, pa_cpu_resume);
 }
 
 int psci_cpu_suspend_enter(u32 state)
 {
 	int ret;
 
-	if (!psci_power_state_loses_context(state))
+	if (!psci_power_state_loses_context(state)) {
+		struct arm_cpuidle_irq_context context;
+
+		arm_cpuidle_save_irq_context(&context);
 		ret = psci_ops.cpu_suspend(state, 0);
-	else
+		arm_cpuidle_restore_irq_context(&context);
+	} else {
 		ret = cpu_suspend(state, psci_suspend_finisher);
+	}
 
 	return ret;
 }
@@ -352,8 +371,10 @@ int psci_cpu_suspend_enter(u32 state)
 
 static int psci_system_suspend(unsigned long unused)
 {
+	phys_addr_t pa_cpu_resume = __pa_symbol(function_nocfi(cpu_resume));
+
 	return invoke_psci_fn(PSCI_FN_NATIVE(1_0, SYSTEM_SUSPEND),
-			      __pa_function(cpu_resume), 0, 0);
+			      pa_cpu_resume, 0, 0);
 }
 
 static int psci_system_suspend_enter(suspend_state_t state)
@@ -506,6 +527,7 @@ static int __init psci_probe(void)
 		psci_init_cpu_suspend();
 		psci_init_system_suspend();
 		psci_init_system_reset2();
+		kvm_init_hyp_services();
 	}
 
 	return 0;

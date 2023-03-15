@@ -6,9 +6,6 @@
  * Copyright (C) 1996-2000 Russell King - Converted to ARM.
  * Copyright (C) 2012 ARM Ltd.
  */
-
-#include <stdarg.h>
-
 #include <linux/compat.h>
 #include <linux/efi.h>
 #include <linux/elf.h>
@@ -18,7 +15,6 @@
 #include <linux/sched/task.h>
 #include <linux/sched/task_stack.h>
 #include <linux/kernel.h>
-#include <linux/lockdep.h>
 #include <linux/mman.h>
 #include <linux/mm.h>
 #include <linux/nospec.h>
@@ -45,9 +41,9 @@
 #include <linux/thread_info.h>
 #include <linux/prctl.h>
 #include <trace/hooks/fpsimd.h>
+#include <trace/hooks/mpam.h>
 
 #include <asm/alternative.h>
-#include <asm/arch_gicv3.h>
 #include <asm/compat.h>
 #include <asm/cpufeature.h>
 #include <asm/cacheflush.h>
@@ -58,6 +54,8 @@
 #include <asm/processor.h>
 #include <asm/pointer_auth.h>
 #include <asm/stacktrace.h>
+#include <asm/switch_to.h>
+#include <asm/system_misc.h>
 
 #if defined(CONFIG_STACKPROTECTOR) && !defined(CONFIG_STACKPROTECTOR_PER_TASK)
 #include <linux/stackprotector.h>
@@ -70,63 +68,6 @@ EXPORT_SYMBOL(__stack_chk_guard);
  */
 void (*pm_power_off)(void);
 EXPORT_SYMBOL_GPL(pm_power_off);
-
-static void noinstr __cpu_do_idle(void)
-{
-	dsb(sy);
-	wfi();
-}
-
-static void noinstr __cpu_do_idle_irqprio(void)
-{
-	unsigned long pmr;
-	unsigned long daif_bits;
-
-	daif_bits = read_sysreg(daif);
-	write_sysreg(daif_bits | PSR_I_BIT, daif);
-
-	/*
-	 * Unmask PMR before going idle to make sure interrupts can
-	 * be raised.
-	 */
-	pmr = gic_read_pmr();
-	gic_write_pmr(GIC_PRIO_IRQON | GIC_PRIO_PSR_I_SET);
-
-	__cpu_do_idle();
-
-	gic_write_pmr(pmr);
-	write_sysreg(daif_bits, daif);
-}
-
-/*
- *	cpu_do_idle()
- *
- *	Idle the processor (wait for interrupt).
- *
- *	If the CPU supports priority masking we must do additional work to
- *	ensure that interrupts are not masked at the PMR (because the core will
- *	not wake up if we block the wake up signal in the interrupt controller).
- */
-void noinstr cpu_do_idle(void)
-{
-	if (system_uses_irq_prio_masking())
-		__cpu_do_idle_irqprio();
-	else
-		__cpu_do_idle();
-}
-
-/*
- * This is our default idle handler.
- */
-void noinstr arch_cpu_idle(void)
-{
-	/*
-	 * This should do all the clock switching and wait for interrupt
-	 * tricks
-	 */
-	cpu_do_idle();
-	raw_local_irq_enable();
-}
 
 #ifdef CONFIG_HOTPLUG_CPU
 void arch_cpu_idle_dead(void)
@@ -221,7 +162,7 @@ static void print_pstate(struct pt_regs *regs)
 	u64 pstate = regs->pstate;
 
 	if (compat_user_mode(regs)) {
-		printk("pstate: %08llx (%c%c%c%c %c %s %s %c%c%c)\n",
+		printk("pstate: %08llx (%c%c%c%c %c %s %s %c%c%c %cDIT %cSSBS)\n",
 			pstate,
 			pstate & PSR_AA32_N_BIT ? 'N' : 'n',
 			pstate & PSR_AA32_Z_BIT ? 'Z' : 'z',
@@ -232,12 +173,14 @@ static void print_pstate(struct pt_regs *regs)
 			pstate & PSR_AA32_E_BIT ? "BE" : "LE",
 			pstate & PSR_AA32_A_BIT ? 'A' : 'a',
 			pstate & PSR_AA32_I_BIT ? 'I' : 'i',
-			pstate & PSR_AA32_F_BIT ? 'F' : 'f');
+			pstate & PSR_AA32_F_BIT ? 'F' : 'f',
+			pstate & PSR_AA32_DIT_BIT ? '+' : '-',
+			pstate & PSR_AA32_SSBS_BIT ? '+' : '-');
 	} else {
 		const char *btype_str = btypes[(pstate & PSR_BTYPE_MASK) >>
 					       PSR_BTYPE_SHIFT];
 
-		printk("pstate: %08llx (%c%c%c%c %c%c%c%c %cPAN %cUAO %cTCO BTYPE=%s)\n",
+		printk("pstate: %08llx (%c%c%c%c %c%c%c%c %cPAN %cUAO %cTCO %cDIT %cSSBS BTYPE=%s)\n",
 			pstate,
 			pstate & PSR_N_BIT ? 'N' : 'n',
 			pstate & PSR_Z_BIT ? 'Z' : 'z',
@@ -250,6 +193,8 @@ static void print_pstate(struct pt_regs *regs)
 			pstate & PSR_PAN_BIT ? '+' : '-',
 			pstate & PSR_UAO_BIT ? '+' : '-',
 			pstate & PSR_TCO_BIT ? '+' : '-',
+			pstate & PSR_DIT_BIT ? '+' : '-',
+			pstate & PSR_SSBS_BIT ? '+' : '-',
 			btype_str);
 	}
 }
@@ -288,19 +233,16 @@ void __show_regs(struct pt_regs *regs)
 	i = top_reg;
 
 	while (i >= 0) {
-		printk("x%-2d: %016llx ", i, regs->regs[i]);
-		i--;
+		printk("x%-2d: %016llx", i, regs->regs[i]);
 
-		if (i % 2 == 0) {
-			pr_cont("x%-2d: %016llx ", i, regs->regs[i]);
-			i--;
-		}
+		while (i-- % 3)
+			pr_cont(" x%-2d: %016llx", i, regs->regs[i]);
 
 		pr_cont("\n");
 	}
 }
 
-void show_regs(struct pt_regs * regs)
+void show_regs(struct pt_regs *regs)
 {
 	__show_regs(regs);
 	dump_backtrace(regs, NULL, KERN_DEFAULT);
@@ -433,6 +375,11 @@ int copy_thread(unsigned long clone_flags, unsigned long stack_start,
 	}
 	p->thread.cpu_context.pc = (unsigned long)ret_from_fork;
 	p->thread.cpu_context.sp = (unsigned long)childregs;
+	/*
+	 * For the benefit of the unwinder, set up childregs->stackframe
+	 * as the final frame for the new task.
+	 */
+	p->thread.cpu_context.fp = (unsigned long)childregs->stackframe;
 
 	ptrace_hw_copy_thread(p);
 
@@ -454,17 +401,6 @@ static void tls_thread_switch(struct task_struct *next)
 		write_sysreg(0, tpidrro_el0);
 
 	write_sysreg(*task_user_tls(next), tpidr_el0);
-}
-
-/* Restore the UAO state depending on next's addr_limit */
-void uao_thread_switch(struct task_struct *next)
-{
-	if (IS_ENABLED(CONFIG_ARM64_UAO)) {
-		if (task_thread_info(next)->addr_limit == KERNEL_DS)
-			asm(ALTERNATIVE("nop", SET_PSTATE_UAO(1), ARM64_HAS_UAO));
-		else
-			asm(ALTERNATIVE("nop", SET_PSTATE_UAO(0), ARM64_HAS_UAO));
-	}
 }
 
 /*
@@ -559,10 +495,15 @@ __notrace_funcgraph struct task_struct *__switch_to(struct task_struct *prev,
 	hw_breakpoint_thread_switch(next);
 	contextidr_thread_switch(next);
 	entry_task_switch(next);
-	uao_thread_switch(next);
 	ssbs_thread_switch(next);
 	erratum_1418040_thread_switch(next);
 	ptrauth_thread_switch_user(next);
+
+	/*
+	 *  vendor hook is needed before the dsb(),
+	 *  because MPAM is related to cache maintenance.
+	 */
+	trace_android_vh_mpam_set(prev, next);
 
 	/*
 	 * Complete any pending TLB or cache maintenance on this CPU in case
@@ -595,7 +536,7 @@ unsigned long get_wchan(struct task_struct *p)
 	struct stackframe frame;
 	unsigned long stack_page, ret = 0;
 	int count = 0;
-	if (!p || p == current || p->state == TASK_RUNNING)
+	if (!p || p == current || task_is_running(p))
 		return 0;
 
 	stack_page = (unsigned long)try_get_task_stack(p);
@@ -611,7 +552,7 @@ unsigned long get_wchan(struct task_struct *p)
 			ret = frame.pc;
 			goto out;
 		}
-	} while (count ++ < 16);
+	} while (count++ < 16);
 
 out:
 	put_task_stack(p);
@@ -625,6 +566,28 @@ unsigned long arch_align_stack(unsigned long sp)
 		sp -= get_random_int() & ~PAGE_MASK;
 	return sp & ~0xf;
 }
+
+#ifdef CONFIG_COMPAT
+int compat_elf_check_arch(const struct elf32_hdr *hdr)
+{
+	if (!system_supports_32bit_el0())
+		return false;
+
+	if ((hdr)->e_machine != EM_ARM)
+		return false;
+
+	if (!((hdr)->e_flags & EF_ARM_EABI_MASK))
+		return false;
+
+	/*
+	 * Prevent execve() of a 32-bit program from a deadline task
+	 * if the restricted affinity mask would be inadmissible on an
+	 * asymmetric system.
+	 */
+	return !static_branch_unlikely(&arm64_mismatched_32bit_el0) ||
+	       !dl_task_check_affinity(current, system_32bit_el0_cpumask());
+}
+#endif
 
 /*
  * Called from setup_new_exec() after (COMPAT_)SET_PERSONALITY.
@@ -647,6 +610,8 @@ void arch_setup_new_exec(void)
 		 */
 		if (static_branch_unlikely(&arm64_mismatched_32bit_el0))
 			force_compatible_cpus_allowed_ptr(current);
+	} else if (static_branch_unlikely(&arm64_mismatched_32bit_el0)) {
+		relax_compatible_cpus_allowed_ptr(current);
 	}
 
 	current->mm->context.flags = mmflags;
@@ -675,7 +640,8 @@ long set_tagged_addr_ctrl(struct task_struct *task, unsigned long arg)
 		return -EINVAL;
 
 	if (system_supports_mte())
-		valid_mask |= PR_MTE_TCF_MASK | PR_MTE_TAG_MASK;
+		valid_mask |= PR_MTE_TCF_SYNC | PR_MTE_TCF_ASYNC \
+			| PR_MTE_TAG_MASK;
 
 	if (arg & ~valid_mask)
 		return -EINVAL;
@@ -739,22 +705,6 @@ static int __init tagged_addr_init(void)
 
 core_initcall(tagged_addr_init);
 #endif	/* CONFIG_ARM64_TAGGED_ADDR_ABI */
-
-asmlinkage void __sched arm64_preempt_schedule_irq(void)
-{
-	lockdep_assert_irqs_disabled();
-
-	/*
-	 * Preempting a task from an IRQ means we leave copies of PSTATE
-	 * on the stack. cpufeature's enable calls may modify PSTATE, but
-	 * resuming one of these preempted tasks would undo those changes.
-	 *
-	 * Only allow a task to be preempted once cpufeatures have been
-	 * enabled.
-	 */
-	if (system_capabilities_finalized())
-		preempt_schedule_irq();
-}
 
 #ifdef CONFIG_BINFMT_ELF
 int arch_elf_adjust_prot(int prot, const struct arch_elf_state *state,

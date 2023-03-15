@@ -80,7 +80,7 @@ static int optee_register_device(const uuid_t *device_uuid)
 	rc = device_register(&optee_device->dev);
 	if (rc) {
 		pr_err("device registration failed, err: %d\n", rc);
-		put_device(&optee_device->dev);
+		kfree(optee_device);
 	}
 
 	return rc;
@@ -106,7 +106,7 @@ static int __optee_enumerate_devices(u32 func)
 		return -ENODEV;
 
 	/* Open session with device enumeration pseudo TA */
-	memcpy(sess_arg.uuid, pta_uuid.b, TEE_IOCTL_UUID_LEN);
+	export_uuid(sess_arg.uuid, &pta_uuid);
 	sess_arg.clnt_login = TEE_IOCTL_LOGIN_PUBLIC;
 	sess_arg.num_params = 0;
 

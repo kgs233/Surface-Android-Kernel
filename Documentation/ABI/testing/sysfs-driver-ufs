@@ -168,7 +168,7 @@ Description:	This file shows the manufacturing date in BCD format.
 What:		/sys/bus/platform/drivers/ufshcd/*/device_descriptor/manufacturer_id
 Date:		February 2018
 Contact:	Stanislav Nijnikov <stanislav.nijnikov@wdc.com>
-Description:	This file shows the manufacturee ID. This is one of the
+Description:	This file shows the manufacturer ID. This is one of the
 		UFS device descriptor parameters. The full information about
 		the descriptor could be found at UFS specifications 2.1.
 
@@ -521,7 +521,7 @@ Description:	This file shows maximum VCC, VCCQ and VCCQ2 value for
 What:		/sys/bus/platform/drivers/ufshcd/*/string_descriptors/manufacturer_name
 Date:		February 2018
 Contact:	Stanislav Nijnikov <stanislav.nijnikov@wdc.com>
-Description:	This file contains a device manufactureer name string.
+Description:	This file contains a device manufacturer name string.
 		The full information about the descriptor could be found at
 		UFS specifications 2.1.
 
@@ -916,21 +916,25 @@ Date:		September 2014
 Contact:	Subhash Jadavani <subhashj@codeaurora.org>
 Description:	This entry could be used to set or show the UFS device
 		runtime power management level. The current driver
-		implementation supports 6 levels with next target states:
+		implementation supports 7 levels with next target states:
 
 		==  ====================================================
-		0   an UFS device will stay active, an UIC link will
+		0   UFS device will stay active, UIC link will
 		    stay active
-		1   an UFS device will stay active, an UIC link will
+		1   UFS device will stay active, UIC link will
 		    hibernate
-		2   an UFS device will moved to sleep, an UIC link will
+		2   UFS device will be moved to sleep, UIC link will
 		    stay active
-		3   an UFS device will moved to sleep, an UIC link will
+		3   UFS device will be moved to sleep, UIC link will
 		    hibernate
-		4   an UFS device will be powered off, an UIC link will
+		4   UFS device will be powered off, UIC link will
 		    hibernate
-		5   an UFS device will be powered off, an UIC link will
+		5   UFS device will be powered off, UIC link will
 		    be powered off
+		6   UFS device will be moved to deep sleep, UIC link
+		    will be powered off. Note, deep sleep might not be
+		    supported in which case this value will not be
+		    accepted
 		==  ====================================================
 
 What:		/sys/bus/platform/drivers/ufshcd/*/rpm_target_dev_state
@@ -954,21 +958,25 @@ Date:		September 2014
 Contact:	Subhash Jadavani <subhashj@codeaurora.org>
 Description:	This entry could be used to set or show the UFS device
 		system power management level. The current driver
-		implementation supports 6 levels with next target states:
+		implementation supports 7 levels with next target states:
 
 		==  ====================================================
-		0   an UFS device will stay active, an UIC link will
+		0   UFS device will stay active, UIC link will
 		    stay active
-		1   an UFS device will stay active, an UIC link will
+		1   UFS device will stay active, UIC link will
 		    hibernate
-		2   an UFS device will moved to sleep, an UIC link will
+		2   UFS device will be moved to sleep, UIC link will
 		    stay active
-		3   an UFS device will moved to sleep, an UIC link will
+		3   UFS device will be moved to sleep, UIC link will
 		    hibernate
-		4   an UFS device will be powered off, an UIC link will
+		4   UFS device will be powered off, UIC link will
 		    hibernate
-		5   an UFS device will be powered off, an UIC link will
+		5   UFS device will be powered off, UIC link will
 		    be powered off
+		6   UFS device will be moved to deep sleep, UIC link
+		    will be powered off. Note, deep sleep might not be
+		    supported in which case this value will not be
+		    accepted
 		==  ====================================================
 
 What:		/sys/bus/platform/drivers/ufshcd/*/spm_target_dev_state
@@ -1280,11 +1288,22 @@ Description:	This entry shows the configured size of WriteBooster buffer.
 
 		The file is read only.
 
+What:		/sys/bus/platform/drivers/ufshcd/*/wb_on
+Date:		January 2021
+Contact:	Bean Huo <beanhuo@micron.com>
+Description:	This node is used to set or display whether UFS WriteBooster is
+		enabled. Echo 0 to this file to disable UFS WriteBooster or 1 to
+		enable it. The WriteBooster is enabled after power-on/reset,
+		however, it will be disabled/enable while CLK scaling down/up
+		(if the platform supports UFSHCD_CAP_CLK_SCALING). For a
+		platform that doesn't support UFSHCD_CAP_CLK_SCALING, we can
+		disable/enable WriteBooster through this sysfs node.
+
 What:		/sys/bus/platform/drivers/ufshcd/*/device_descriptor/hpb_version
 Date:		June 2021
 Contact:	Daejun Park <daejun7.park@samsung.com>
 Description:	This entry shows the HPB specification version.
-		The full information about the descriptor could be found at UFS
+		The full information about the descriptor can be found in the UFS
 		HPB (Host Performance Booster) Extension specifications.
 		Example: version 1.2.3 = 0123h
 
@@ -1411,13 +1430,13 @@ What:		/sys/class/scsi_device/*/device/hpb_params/requeue_timeout_ms
 Date:		June 2021
 Contact:	Daejun Park <daejun7.park@samsung.com>
 Description:	This entry shows the requeue timeout threshold for write buffer
-		command in ms. This value can be changed by writing proper integer to
+		command in ms. The value can be changed by writing an integer to
 		this entry.
 
 What:		/sys/bus/platform/drivers/ufshcd/*/attributes/max_data_size_hpb_single_cmd
 Date:		June 2021
 Contact:	Daejun Park <daejun7.park@samsung.com>
-Description:	This entry shows the maximum HPB data size for using single HPB
+Description:	This entry shows the maximum HPB data size for using a single HPB
 		command.
 
 		===  ========
@@ -1446,7 +1465,7 @@ What:		/sys/class/scsi_device/*/device/hpb_param_sysfs/activation_thld
 Date:		February 2021
 Contact:	Avri Altman <avri.altman@wdc.com>
 Description:	In host control mode, reads are the major source of activation
-		trials.  once this threshold hs met, the region is added to the
+		trials.  Once this threshold hs met, the region is added to the
 		"to-be-activated" list.  Since we reset the read counter upon
 		write, this include sending a rb command updating the region
 		ppn as well.
@@ -1454,64 +1473,64 @@ Description:	In host control mode, reads are the major source of activation
 What:		/sys/class/scsi_device/*/device/hpb_param_sysfs/normalization_factor
 Date:		February 2021
 Contact:	Avri Altman <avri.altman@wdc.com>
-Description:	In host control mode, We think of the regions as "buckets".
+Description:	In host control mode, we think of the regions as "buckets".
 		Those buckets are being filled with reads, and emptied on write.
 		We use entries_per_srgn - the amount of blocks in a subregion as
-		our bucket size.  This applies because HPB1.0 only concern a
+		our bucket size.  This applies because HPB1.0 only handles
 		single-block reads.  Once the bucket size is crossed, we trigger
 		a normalization work - not only to avoid overflow, but mainly
 		because we want to keep those counters normalized, as we are
 		using those reads as a comparative score, to make various decisions.
 		The normalization is dividing (shift right) the read counter by
 		the normalization_factor. If during consecutive normalizations
-		an active region has exhaust its reads - inactivate it.
+		an active region has exhausted its reads - inactivate it.
 
 What:		/sys/class/scsi_device/*/device/hpb_param_sysfs/eviction_thld_enter
 Date:		February 2021
 Contact:	Avri Altman <avri.altman@wdc.com>
 Description:	Region deactivation is often due to the fact that eviction took
-		place: a region become active on the expense of another. This is
-		happening when the max-active-regions limit has crossed.
+		place: A region becomes active at the expense of another. This is
+		happening when the max-active-regions limit has been crossed.
 		In host mode, eviction is considered an extreme measure. We
 		want to verify that the entering region has enough reads, and
-		the exiting region has much less reads.  eviction_thld_enter is
+		the exiting region has much fewer reads.  eviction_thld_enter is
 		the min reads that a region must have in order to be considered
-		as a candidate to evict other region.
+		a candidate for evicting another region.
 
 What:		/sys/class/scsi_device/*/device/hpb_param_sysfs/eviction_thld_exit
 Date:		February 2021
 Contact:	Avri Altman <avri.altman@wdc.com>
-Description:	same as above for the exiting region. A region is consider to
-		be a candidate to be evicted, only if it has less reads than
+Description:	Same as above for the exiting region. A region is considered to
+		be a candidate for eviction only if it has fewer reads than
 		eviction_thld_exit.
 
 What:		/sys/class/scsi_device/*/device/hpb_param_sysfs/read_timeout_ms
 Date:		February 2021
 Contact:	Avri Altman <avri.altman@wdc.com>
-Description:	In order not to hang on to “cold” regions, we shall inactivate
+Description:	In order not to hang on to "cold" regions, we inactivate
 		a region that has no READ access for a predefined amount of
 		time - read_timeout_ms. If read_timeout_ms has expired, and the
-		region is dirty - it is less likely that we can make any use of
-		HPB-READing it.  So we inactivate it.  Still, deactivation has
-		its overhead, and we may still benefit from HPB-READing this
+		region is dirty, it is less likely that we can make any use of
+		HPB reading it so we inactivate it.  Still, deactivation has
+		its overhead, and we may still benefit from HPB reading this
 		region if it is clean - see read_timeout_expiries.
 
 What:		/sys/class/scsi_device/*/device/hpb_param_sysfs/read_timeout_expiries
 Date:		February 2021
 Contact:	Avri Altman <avri.altman@wdc.com>
-Description:	if the region read timeout has expired, but the region is clean,
+Description:	If the region read timeout has expired, but the region is clean,
 		just re-wind its timer for another spin.  Do that as long as it
 		is clean and did not exhaust its read_timeout_expiries threshold.
 
 What:		/sys/class/scsi_device/*/device/hpb_param_sysfs/timeout_polling_interval_ms
 Date:		February 2021
 Contact:	Avri Altman <avri.altman@wdc.com>
-Description:	the frequency in which the delayed worker that checks the
-		read_timeouts is awaken.
+Description:	The frequency with which the delayed worker that checks the
+		read_timeouts is awakened.
 
 What:		/sys/class/scsi_device/*/device/hpb_param_sysfs/inflight_map_req
 Date:		February 2021
 Contact:	Avri Altman <avri.altman@wdc.com>
-Description:	in host control mode the host is the originator of map requests.
-		To not flood the device with map requests, use a simple throttling
+Description:	In host control mode the host is the originator of map requests.
+		To avoid flooding the device with map requests, use a simple throttling
 		mechanism that limits the number of inflight map requests.

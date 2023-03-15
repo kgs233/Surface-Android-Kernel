@@ -14,7 +14,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 
-#include <trace/hooks/mmc_core.h>
+#include <trace/hooks/mmc.h>
 
 #include "slot-gpio.h"
 

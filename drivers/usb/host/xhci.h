@@ -1344,6 +1344,10 @@ enum xhci_setup_dev {
 #define TRB_SIA			(1<<31)
 #define TRB_FRAME_ID(p)		(((p) & 0x7ff) << 20)
 
+/* TRB cache size for xHC with TRB cache */
+#define TRB_CACHE_SIZE_HS	8
+#define TRB_CACHE_SIZE_SS	16
+
 struct xhci_generic_trb {
 	__le32 field[4];
 };
@@ -1532,6 +1536,12 @@ static inline const char *xhci_trb_type_string(u8 type)
 #define TRB_BUFF_LEN_UP_TO_BOUNDARY(addr)	(TRB_MAX_BUFF_SIZE - \
 					(addr & (TRB_MAX_BUFF_SIZE - 1)))
 #define MAX_SOFT_RETRY		3
+/*
+ * Limits of consecutive isoc trbs that can Block Event Interrupt (BEI) if
+ * XHCI_AVOID_BEI quirk is in use.
+ */
+#define AVOID_BEI_INTERVAL_MIN	8
+#define AVOID_BEI_INTERVAL_MAX	32
 
 struct xhci_segment {
 	union xhci_trb		*trbs;
@@ -1676,10 +1686,6 @@ struct urb_priv {
  * meaning 64 ring segments.
  * Initial allocated size of the ERST, in number of entries */
 #define	ERST_NUM_SEGS	1
-/* Initial allocated size of the ERST, in number of entries */
-#define	ERST_SIZE	64
-/* Initial number of event segment rings allocated */
-#define	ERST_ENTRIES	1
 /* Poll every 60 seconds */
 #define	POLL_TIMEOUT	60
 /* Stop endpoint command timeout (secs) for URB cancellation watchdog timer */
@@ -1785,6 +1791,7 @@ struct xhci_hcd {
 	u8		isoc_threshold;
 	/* imod_interval in ns (I * 250ns) */
 	u32		imod_interval;
+	u32		isoc_bei_interval;
 	int		event_ring_max;
 	/* 4KB min, 128MB max */
 	int		page_size;
@@ -1905,6 +1912,7 @@ struct xhci_hcd {
 #define XHCI_DISABLE_SPARSE	BIT_ULL(38)
 #define XHCI_SG_TRB_CACHE_SIZE_QUIRK	BIT_ULL(39)
 #define XHCI_NO_SOFT_RETRY	BIT_ULL(40)
+#define XHCI_BROKEN_D3COLD	BIT_ULL(41)
 #define XHCI_EP_CTX_BROKEN_DCS	BIT_ULL(42)
 #define XHCI_SUSPEND_RESUME_CLKS	BIT_ULL(43)
 #define XHCI_RESET_TO_DEFAULT	BIT_ULL(44)
@@ -1937,9 +1945,7 @@ struct xhci_hcd {
 
 	void			*dbc;
 
-	/* Used for bug 194461020 */
-	ANDROID_KABI_USE(1, struct xhci_vendor_ops *vendor_ops);
-
+	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);
 	ANDROID_KABI_RESERVE(3);
 	ANDROID_KABI_RESERVE(4);
@@ -1959,9 +1965,6 @@ struct xhci_driver_overrides {
 			     struct usb_host_endpoint *ep);
 	int (*check_bandwidth)(struct usb_hcd *, struct usb_device *);
 	void (*reset_bandwidth)(struct usb_hcd *, struct usb_device *);
-	int (*address_device)(struct usb_hcd *hcd, struct usb_device *udev);
-	int (*bus_suspend)(struct usb_hcd *hcd);
-	int (*bus_resume)(struct usb_hcd *hcd);
 };
 
 #define	XHCI_CFC_DELAY		10
@@ -2118,7 +2121,6 @@ int xhci_drop_endpoint(struct usb_hcd *hcd, struct usb_device *udev,
 		       struct usb_host_endpoint *ep);
 int xhci_check_bandwidth(struct usb_hcd *hcd, struct usb_device *udev);
 void xhci_reset_bandwidth(struct usb_hcd *hcd, struct usb_device *udev);
-int xhci_address_device(struct usb_hcd *hcd, struct usb_device *udev);
 int xhci_disable_slot(struct xhci_hcd *xhci, u32 slot_id);
 int xhci_ext_cap_init(struct xhci_hcd *xhci);
 
@@ -2225,53 +2227,6 @@ static inline struct xhci_ring *xhci_urb_to_transfer_ring(struct xhci_hcd *xhci,
 					xhci_get_endpoint_index(&urb->ep->desc),
 					urb->stream_id);
 }
-
-/**
- * struct xhci_vendor_ops - function callbacks for vendor specific operations
- * @vendor_init: called for vendor init process
- * @vendor_cleanup: called for vendor cleanup process
- * @is_usb_offload_enabled: called to check if usb offload enabled
- * @queue_irq_work: called to queue vendor specific irq work
- * @alloc_dcbaa: called when allocating vendor specific dcbaa
- * @free_dcbaa: called to free vendor specific dcbaa
- * @alloc_transfer_ring: called when remote transfer ring allocation is required
- * @free_transfer_ring: called to free vendor specific transfer ring
- * @sync_dev_ctx: called when synchronization for device context is required
- * @alloc_container_ctx: called when allocating vendor specific container context
- * @free_container_ctx: called to free vendor specific container context
- */
-struct xhci_vendor_ops {
-	int (*vendor_init)(struct xhci_hcd *xhci);
-	void (*vendor_cleanup)(struct xhci_hcd *xhci);
-	bool (*is_usb_offload_enabled)(struct xhci_hcd *xhci,
-				       struct xhci_virt_device *vdev,
-				       unsigned int ep_index);
-	irqreturn_t (*queue_irq_work)(struct xhci_hcd *xhci);
-
-	struct xhci_device_context_array *(*alloc_dcbaa)(struct xhci_hcd *xhci,
-							 gfp_t flags);
-	void (*free_dcbaa)(struct xhci_hcd *xhci);
-
-	struct xhci_ring *(*alloc_transfer_ring)(struct xhci_hcd *xhci,
-			u32 endpoint_type, enum xhci_ring_type ring_type,
-			unsigned int max_packet, gfp_t mem_flags);
-	void (*free_transfer_ring)(struct xhci_hcd *xhci,
-			struct xhci_virt_device *virt_dev, unsigned int ep_index);
-	int (*sync_dev_ctx)(struct xhci_hcd *xhci, unsigned int slot_id);
-	bool (*usb_offload_skip_urb)(struct xhci_hcd *xhci, struct urb *urb);
-	void (*alloc_container_ctx)(struct xhci_hcd *xhci, struct xhci_container_ctx *ctx,
-				    int type, gfp_t flags);
-	void (*free_container_ctx)(struct xhci_hcd *xhci, struct xhci_container_ctx *ctx);
-};
-
-struct xhci_vendor_ops *xhci_vendor_get_ops(struct xhci_hcd *xhci);
-
-int xhci_vendor_sync_dev_ctx(struct xhci_hcd *xhci, unsigned int slot_id);
-bool xhci_vendor_usb_offload_skip_urb(struct xhci_hcd *xhci, struct urb *urb);
-void xhci_vendor_free_transfer_ring(struct xhci_hcd *xhci,
-		struct xhci_virt_device *virt_dev, unsigned int ep_index);
-bool xhci_vendor_is_usb_offload_enabled(struct xhci_hcd *xhci,
-		struct xhci_virt_device *virt_dev, unsigned int ep_index);
 
 /*
  * TODO: As per spec Isochronous IDT transmissions are supported. We bypass

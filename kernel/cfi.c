@@ -2,7 +2,7 @@
 /*
  * Clang Control Flow Integrity (CFI) error and slowpath handling.
  *
- * Copyright (C) 2019 Google LLC
+ * Copyright (C) 2021 Google LLC
  */
 
 #include <linux/hardirq.h>
@@ -19,11 +19,9 @@
 /* Compiler-defined handler names */
 #ifdef CONFIG_CFI_PERMISSIVE
 #define cfi_failure_handler	__ubsan_handle_cfi_check_fail
-#define cfi_slowpath_handler	__cfi_slowpath_diag
-#else /* enforcing */
+#else
 #define cfi_failure_handler	__ubsan_handle_cfi_check_fail_abort
-#define cfi_slowpath_handler	__cfi_slowpath
-#endif /* CONFIG_CFI_PERMISSIVE */
+#endif
 
 static inline void handle_cfi_failure(void *ptr)
 {
@@ -45,6 +43,8 @@ typedef u16 shadow_t;
 struct cfi_shadow {
 	/* Page index for the beginning of the shadow */
 	unsigned long base;
+	/* rcu to free old cfi_shadow asynchronously */
+	struct rcu_head rcu;
 	/* An array of __cfi_check locations (as indices to the shadow) */
 	shadow_t shadow[1];
 } __packed;
@@ -184,6 +184,13 @@ static void remove_module_from_shadow(struct cfi_shadow *s, struct module *mod,
 	}
 }
 
+static void free_shadow(struct rcu_head *rcu)
+{
+	struct cfi_shadow *old = container_of(rcu, struct cfi_shadow, rcu);
+
+	vfree(old);
+}
+
 typedef void (*update_shadow_fn)(struct cfi_shadow *, struct module *,
 			unsigned long min_addr, unsigned long max_addr);
 
@@ -194,8 +201,7 @@ static void update_shadow(struct module *mod, unsigned long base_addr,
 	struct cfi_shadow *next;
 	unsigned long min_addr, max_addr;
 
-	next = (struct cfi_shadow *)vmalloc(SHADOW_SIZE);
-	WARN_ON(!next);
+	next = vmalloc(SHADOW_SIZE);
 
 	mutex_lock(&shadow_update_lock);
 	prev = rcu_dereference_protected(cfi_shadow,
@@ -214,11 +220,10 @@ static void update_shadow(struct module *mod, unsigned long base_addr,
 
 	rcu_assign_pointer(cfi_shadow, next);
 	mutex_unlock(&shadow_update_lock);
-	synchronize_rcu_expedited();
 
 	if (prev) {
 		set_memory_rw((unsigned long)prev, SHADOW_PAGES);
-		vfree(prev);
+		call_rcu(&prev->rcu, free_shadow);
 	}
 }
 
@@ -247,7 +252,7 @@ static inline cfi_check_fn ptr_to_check_fn(const struct cfi_shadow __rcu *s,
 	return (cfi_check_fn)shadow_to_check_fn(s, index);
 }
 
-static inline cfi_check_fn __find_shadow_check_fn(unsigned long ptr)
+static inline cfi_check_fn find_shadow_check_fn(unsigned long ptr)
 {
 	cfi_check_fn fn;
 
@@ -260,14 +265,14 @@ static inline cfi_check_fn __find_shadow_check_fn(unsigned long ptr)
 
 #else /* !CONFIG_CFI_CLANG_SHADOW */
 
-static inline cfi_check_fn __find_shadow_check_fn(unsigned long ptr)
+static inline cfi_check_fn find_shadow_check_fn(unsigned long ptr)
 {
 	return NULL;
 }
 
 #endif /* CONFIG_CFI_CLANG_SHADOW */
 
-static inline cfi_check_fn __find_module_check_fn(unsigned long ptr)
+static inline cfi_check_fn find_module_check_fn(unsigned long ptr)
 {
 	cfi_check_fn fn = NULL;
 	struct module *mod;
@@ -283,45 +288,40 @@ static inline cfi_check_fn __find_module_check_fn(unsigned long ptr)
 
 static inline cfi_check_fn find_check_fn(unsigned long ptr)
 {
-	bool rcu;
 	cfi_check_fn fn = NULL;
+	unsigned long flags;
+	bool rcu_idle;
+
+	if (is_kernel_text(ptr))
+		return __cfi_check;
 
 	/*
 	 * Indirect call checks can happen when RCU is not watching. Both
 	 * the shadow and __module_address use RCU, so we need to wake it
-	 * up before proceeding. Use rcu_nmi_enter/exit() as these calls
-	 * can happen anywhere.
+	 * up if necessary.
 	 */
-	rcu = rcu_is_watching();
-	if (!rcu)
-		rcu_nmi_enter();
-
-	if (IS_ENABLED(CONFIG_CFI_CLANG_SHADOW)) {
-		fn = __find_shadow_check_fn(ptr);
-		if (fn)
-			goto out;
+	rcu_idle = !rcu_is_watching();
+	if (rcu_idle) {
+		local_irq_save(flags);
+		rcu_irq_enter();
 	}
 
-	if (is_kernel_text(ptr)) {
-		fn = __cfi_check;
-		goto out;
+	if (IS_ENABLED(CONFIG_CFI_CLANG_SHADOW))
+		fn = find_shadow_check_fn(ptr);
+	if (!fn)
+		fn = find_module_check_fn(ptr);
+
+	if (rcu_idle) {
+		rcu_irq_exit();
+		local_irq_restore(flags);
 	}
-
-	fn = __find_module_check_fn(ptr);
-
-out:
-	if (!rcu)
-		rcu_nmi_exit();
 
 	return fn;
 }
 
-void cfi_slowpath_handler(uint64_t id, void *ptr, void *diag)
+static inline void __nocfi ___cfi_slowpath_diag(uint64_t id, void *ptr, void *diag)
 {
 	cfi_check_fn fn = find_check_fn((unsigned long)ptr);
-
-	if (!IS_ENABLED(CONFIG_CFI_PERMISSIVE))
-		diag = NULL;
 
 	if (likely(fn))
 		fn(id, ptr, diag);
@@ -329,24 +329,24 @@ void cfi_slowpath_handler(uint64_t id, void *ptr, void *diag)
 		handle_cfi_failure(ptr);
 }
 
+void __cfi_slowpath_diag(uint64_t id, void *ptr, void *diag)
+{
+	___cfi_slowpath_diag(id, ptr, diag);
+}
+EXPORT_SYMBOL(__cfi_slowpath_diag);
+
 #else /* !CONFIG_MODULES */
 
-void cfi_slowpath_handler(uint64_t id, void *ptr, void *diag)
+void __cfi_slowpath_diag(uint64_t id, void *ptr, void *diag)
 {
 	handle_cfi_failure(ptr); /* No modules */
 }
+EXPORT_SYMBOL(__cfi_slowpath_diag);
 
 #endif /* CONFIG_MODULES */
-
-EXPORT_SYMBOL(cfi_slowpath_handler);
 
 void cfi_failure_handler(void *data, void *ptr, void *vtable)
 {
 	handle_cfi_failure(ptr);
 }
 EXPORT_SYMBOL(cfi_failure_handler);
-
-void __cfi_check_fail(void *data, void *ptr)
-{
-	handle_cfi_failure(ptr);
-}

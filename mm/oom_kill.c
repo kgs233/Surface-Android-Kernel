@@ -78,7 +78,7 @@ static inline bool is_memcg_oom(struct oom_control *oc)
 
 #ifdef CONFIG_NUMA
 /**
- * oom_cpuset_eligible() - check task eligiblity for kill
+ * oom_cpuset_eligible() - check task eligibility for kill
  * @start: task struct of which task to consider
  * @oc: pointer to struct oom_control
  *
@@ -108,7 +108,7 @@ static bool oom_cpuset_eligible(struct task_struct *start,
 			 * mempolicy intersects current, otherwise it may be
 			 * needlessly killed.
 			 */
-			ret = mempolicy_nodemask_intersects(tsk, mask);
+			ret = mempolicy_in_oom_domain(tsk, mask);
 		} else {
 			/*
 			 * This is not a mempolicy constrained oom, so only
@@ -175,10 +175,12 @@ static bool oom_unkillable_task(struct task_struct *p)
 }
 
 /*
- * Print out unreclaimble slabs info when unreclaimable slabs amount is greater
- * than all user memory (LRU pages)
- */
-static bool is_dump_unreclaim_slabs(void)
+ * Check whether unreclaimable slab amount is greater than
+ * all user memory(LRU pages).
+ * dump_unreclaimable_slab() could help in the case that
+ * oom due to too much unreclaimable slab used by kernel.
+*/
+static bool should_dump_unreclaim_slab(void)
 {
 	unsigned long nr_lru;
 
@@ -343,24 +345,7 @@ static int oom_evaluate_task(struct task_struct *task, void *arg)
 	}
 
 	points = oom_badness(task, oc->totalpages);
-
-	if (points == LONG_MIN)
-		goto next;
-
-	/*
-	 * Check to see if this is the worst task with a non-negative
-	 * ADJ score seen so far
-	 */
-	if (task->signal->oom_score_adj >= 0 &&
-	    points > oc->chosen_non_negative_adj_points) {
-		if (oc->chosen_non_negative_adj)
-			put_task_struct(oc->chosen_non_negative_adj);
-		get_task_struct(task);
-		oc->chosen_non_negative_adj = task;
-		oc->chosen_non_negative_adj_points = points;
-	}
-
-	if (points < oc->chosen_points)
+	if (points == LONG_MIN || points < oc->chosen_points)
 		goto next;
 
 select:
@@ -372,11 +357,8 @@ select:
 next:
 	return 0;
 abort:
-	if (oc->chosen_non_negative_adj)
-		put_task_struct(oc->chosen_non_negative_adj);
 	if (oc->chosen)
 		put_task_struct(oc->chosen);
-	oc->chosen_non_negative_adj = NULL;
 	oc->chosen = (void *)-1UL;
 	return 1;
 }
@@ -388,8 +370,6 @@ abort:
 static void select_bad_process(struct oom_control *oc)
 {
 	oc->chosen_points = LONG_MIN;
-	oc->chosen_non_negative_adj_points = LONG_MIN;
-	oc->chosen_non_negative_adj = NULL;
 
 	if (is_memcg_oom(oc))
 		mem_cgroup_scan_tasks(oc->memcg, oom_evaluate_task, oc);
@@ -401,20 +381,6 @@ static void select_bad_process(struct oom_control *oc)
 			if (oom_evaluate_task(p, oc))
 				break;
 		rcu_read_unlock();
-	}
-
-	if (oc->chosen_non_negative_adj) {
-		/*
-		 * If oc->chosen has a negative ADJ, and we found a task with
-		 * a postive ADJ to kill, kill the task with the positive ADJ
-		 * instead.
-		 */
-		if (oc->chosen && oc->chosen->signal->oom_score_adj < 0) {
-			put_task_struct(oc->chosen);
-			oc->chosen = oc->chosen_non_negative_adj;
-			oc->chosen_points = oc->chosen_non_negative_adj_points;
-		} else
-			put_task_struct(oc->chosen_non_negative_adj);
 	}
 }
 
@@ -433,9 +399,8 @@ static int dump_task(struct task_struct *p, void *arg)
 	task = find_lock_task_mm(p);
 	if (!task) {
 		/*
-		 * This is a kthread or all of p's threads have already
-		 * detached their mm's.  There's no need to report
-		 * them; they can't be oom killed anyway.
+		 * All of p's threads have already detached their mm's. There's
+		 * no need to report them; they can't be oom killed anyway.
 		 */
 		return 0;
 	}
@@ -503,7 +468,7 @@ static void dump_header(struct oom_control *oc, struct task_struct *p)
 		mem_cgroup_print_oom_meminfo(oc->memcg);
 	else {
 		show_mem(SHOW_MEM_FILTER_NODES, oc->nodemask);
-		if (is_dump_unreclaim_slabs())
+		if (should_dump_unreclaim_slab())
 			dump_unreclaimable_slab();
 	}
 	if (sysctl_oom_dump_tasks)
@@ -584,15 +549,15 @@ bool __oom_reap_task_mm(struct mm_struct *mm)
 			mmu_notifier_range_init(&range, MMU_NOTIFY_UNMAP, 0,
 						vma, mm, vma->vm_start,
 						vma->vm_end);
-			tlb_gather_mmu(&tlb, mm, range.start, range.end);
+			tlb_gather_mmu(&tlb, mm);
 			if (mmu_notifier_invalidate_range_start_nonblock(&range)) {
-				tlb_finish_mmu(&tlb, range.start, range.end);
+				tlb_finish_mmu(&tlb);
 				ret = false;
 				continue;
 			}
 			unmap_page_range(&tlb, vma, range.start, range.end, NULL);
 			mmu_notifier_invalidate_range_end(&range);
-			tlb_finish_mmu(&tlb, range.start, range.end);
+			tlb_finish_mmu(&tlb);
 		}
 	}
 
@@ -673,7 +638,7 @@ done:
 	 */
 	set_bit(MMF_OOM_SKIP, &mm->flags);
 
-	/* Drop a reference taken by wake_oom_reaper */
+	/* Drop a reference taken by queue_oom_reaper */
 	put_task_struct(tsk);
 }
 
@@ -683,12 +648,12 @@ static int oom_reaper(void *unused)
 		struct task_struct *tsk = NULL;
 
 		wait_event_freezable(oom_reaper_wait, oom_reaper_list != NULL);
-		spin_lock(&oom_reaper_lock);
+		spin_lock_irq(&oom_reaper_lock);
 		if (oom_reaper_list != NULL) {
 			tsk = oom_reaper_list;
 			oom_reaper_list = tsk->oom_reaper_list;
 		}
-		spin_unlock(&oom_reaper_lock);
+		spin_unlock_irq(&oom_reaper_lock);
 
 		if (tsk)
 			oom_reap_task(tsk);
@@ -697,20 +662,51 @@ static int oom_reaper(void *unused)
 	return 0;
 }
 
-static void wake_oom_reaper(struct task_struct *tsk)
+static void __wake_oom_reaper(struct task_struct *tsk)
+{
+	struct mm_struct *mm = tsk->signal->oom_mm;
+	unsigned long flags;
+
+	/* The victim managed to terminate on its own - see exit_mmap */
+	if (test_bit(MMF_OOM_SKIP, &mm->flags)) {
+		put_task_struct(tsk);
+		return;
+	}
+
+	spin_lock_irqsave(&oom_reaper_lock, flags);
+	tsk->oom_reaper_list = oom_reaper_list;
+	oom_reaper_list = tsk;
+	spin_unlock_irqrestore(&oom_reaper_lock, flags);
+	trace_wake_reaper(tsk->pid);
+	wake_up(&oom_reaper_wait);
+}
+
+static void wake_oom_reaper(struct timer_list *timer)
+{
+	struct task_struct *tsk = container_of(timer, struct task_struct,
+			oom_reaper_timer);
+	__wake_oom_reaper(tsk);
+}
+
+/*
+ * Give the OOM victim time to exit naturally before invoking the oom_reaping.
+ * The timers timeout is arbitrary... the longer it is, the longer the worst
+ * case scenario for the OOM can take. If it is too small, the oom_reaper can
+ * get in the way and release resources needed by the process exit path.
+ * e.g. The futex robust list can sit in Anon|Private memory that gets reaped
+ * before the exit path is able to wake the futex waiters.
+ */
+#define OOM_REAPER_DELAY (2*HZ)
+static void queue_oom_reaper(struct task_struct *tsk)
 {
 	/* mm is already queued? */
 	if (test_and_set_bit(MMF_OOM_REAP_QUEUED, &tsk->signal->oom_mm->flags))
 		return;
 
 	get_task_struct(tsk);
-
-	spin_lock(&oom_reaper_lock);
-	tsk->oom_reaper_list = oom_reaper_list;
-	oom_reaper_list = tsk;
-	spin_unlock(&oom_reaper_lock);
-	trace_wake_reaper(tsk->pid);
-	wake_up(&oom_reaper_wait);
+	timer_setup(&tsk->oom_reaper_timer, wake_oom_reaper, 0);
+	tsk->oom_reaper_timer.expires = jiffies + OOM_REAPER_DELAY;
+	add_timer(&tsk->oom_reaper_timer);
 }
 
 static int __init oom_init(void)
@@ -720,7 +716,11 @@ static int __init oom_init(void)
 }
 subsys_initcall(oom_init)
 #else
-static inline void wake_oom_reaper(struct task_struct *tsk)
+static inline void queue_oom_reaper(struct task_struct *tsk)
+{
+}
+
+static void __wake_oom_reaper(struct task_struct *tsk)
 {
 }
 #endif /* CONFIG_MMU */
@@ -970,7 +970,7 @@ static void __oom_kill_process(struct task_struct *victim, const char *message)
 			continue;
 		}
 		/*
-		 * No kthead_use_mm() user needs to read from the userspace so
+		 * No kthread_use_mm() user needs to read from the userspace so
 		 * we are ok to reap it.
 		 */
 		if (unlikely(p->flags & PF_KTHREAD))
@@ -980,7 +980,7 @@ static void __oom_kill_process(struct task_struct *victim, const char *message)
 	rcu_read_unlock();
 
 	if (can_oom_reap)
-		wake_oom_reaper(victim);
+		queue_oom_reaper(victim);
 
 	mmdrop(mm);
 	put_task_struct(victim);
@@ -1016,7 +1016,7 @@ static void oom_kill_process(struct oom_control *oc, const char *message)
 	task_lock(victim);
 	if (task_will_free_mem(victim)) {
 		mark_oom_victim(victim);
-		wake_oom_reaper(victim);
+		queue_oom_reaper(victim);
 		task_unlock(victim);
 		put_task_struct(victim);
 		return;
@@ -1041,7 +1041,7 @@ static void oom_kill_process(struct oom_control *oc, const char *message)
 	if (oom_group) {
 		mem_cgroup_print_oom_group(oom_group);
 		mem_cgroup_scan_tasks(oom_group, oom_kill_memcg_member,
-				      (void*)message);
+				      (void *)message);
 		mem_cgroup_put(oom_group);
 	}
 }
@@ -1114,7 +1114,7 @@ bool out_of_memory(struct oom_control *oc)
 	 */
 	if (task_will_free_mem(current)) {
 		mark_oom_victim(current);
-		wake_oom_reaper(current);
+		queue_oom_reaper(current);
 		return true;
 	}
 
@@ -1277,12 +1277,13 @@ void add_to_oom_reaper(struct task_struct *p)
 	p = find_lock_task_mm(p);
 	if (!p)
 		return;
-
-	get_task_struct(p);
 	if (task_will_free_mem(p)) {
 		__mark_oom_victim(p);
-		wake_oom_reaper(p);
+		if (!test_and_set_bit(MMF_OOM_REAP_QUEUED,
+				     &p->signal->oom_mm->flags)) {
+			get_task_struct(p);
+			__wake_oom_reaper(p);
+		}
 	}
 	task_unlock(p);
-	put_task_struct(p);
 }

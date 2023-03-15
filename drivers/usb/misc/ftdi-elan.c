@@ -2099,7 +2099,6 @@ more:{
 				} else
 					d += sprintf(d, " ..");
 				bytes_read += 1;
-				continue;
 			}
 			goto more;
 		} else if (packet_bytes > 1) {

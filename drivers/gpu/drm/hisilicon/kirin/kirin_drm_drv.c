@@ -3,7 +3,7 @@
  * Hisilicon Kirin SoCs drm master driver
  *
  * Copyright (c) 2016 Linaro Limited.
- * Copyright (c) 2014-2016 Hisilicon Limited.
+ * Copyright (c) 2014-2016 HiSilicon Limited.
  *
  * Author:
  *	Xinliang Liu <z.liuxinliang@hisilicon.com>
@@ -185,8 +185,6 @@ static int kirin_drm_kms_init(struct drm_device *dev,
 		DRM_ERROR("failed to initialize vblank.\n");
 		goto err_unbind_all;
 	}
-	/* with irq_enabled = true, we can use the vblank feature. */
-	dev->irq_enabled = true;
 
 	/* reset all the states of crtc/plane/encoder/connector */
 	drm_mode_config_reset(dev);
@@ -293,16 +291,9 @@ static int kirin_drm_platform_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id kirin_drm_dt_ids[] = {
-#ifdef CONFIG_DRM_HISI_KIRIN620
 	{ .compatible = "hisilicon,hi6220-ade",
 	  .data = &ade_driver_data,
 	},
-#endif
-#ifdef CONFIG_DRM_HISI_KIRIN960
-	{ .compatible = "hisilicon,hi3660-dpe",
-	  .data = &dpe_driver_data,
-	},
-#endif
 	{ /* end node */ },
 };
 MODULE_DEVICE_TABLE(of, kirin_drm_dt_ids);

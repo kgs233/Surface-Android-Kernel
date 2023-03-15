@@ -1310,9 +1310,6 @@ static s32 snto32(__u32 value, unsigned n)
 	if (!value || !n)
 		return 0;
 
-	if (n > 32)
-		n = 32;
-
 	switch (n) {
 	case 8:  return ((__s8)value);
 	case 16: return ((__s16)value);
@@ -2135,7 +2132,7 @@ struct hid_dynid {
 };
 
 /**
- * store_new_id - add a new HID device ID to this driver and re-probe devices
+ * new_id_store - add a new HID device ID to this driver and re-probe devices
  * @drv: target device driver
  * @buf: buffer for scanning device ID data
  * @count: input size
@@ -2305,7 +2302,7 @@ end:
 	return ret;
 }
 
-static int hid_device_remove(struct device *dev)
+static void hid_device_remove(struct device *dev)
 {
 	struct hid_device *hdev = to_hid_device(dev);
 	struct hid_driver *hdrv;
@@ -2325,8 +2322,6 @@ static int hid_device_remove(struct device *dev)
 
 	if (!hdev->io_started)
 		up(&hdev->driver_input_lock);
-
-	return 0;
 }
 
 static ssize_t modalias_show(struct device *dev, struct device_attribute *a,
@@ -2590,7 +2585,6 @@ int hid_check_keys_pressed(struct hid_device *hid)
 
 	return 0;
 }
-
 EXPORT_SYMBOL_GPL(hid_check_keys_pressed);
 
 static int __init hid_init(void)

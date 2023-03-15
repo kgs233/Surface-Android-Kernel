@@ -38,9 +38,7 @@ LDFLAGS_vmlinux="$3"
 # Will be supressed by "make -s"
 info()
 {
-	if [ "${quiet}" != "silent_" ]; then
-		printf "  %-7s %s\n" "${1}" "${2}"
-	fi
+	printf "  %-7s %s\n" "${1}" "${2}"
 }
 
 # Generate a linker script to ensure correct ordering of initcalls.
@@ -122,6 +120,9 @@ objtool_link()
 
 	if [ -n "${CONFIG_VMLINUX_VALIDATION}" ]; then
 		objtoolopt="${objtoolopt} --noinstr"
+		if is_enabled CONFIG_CPU_UNRET_ENTRY; then
+			objtoolopt="${objtoolopt} --unret"
+		fi
 	fi
 
 	if [ -n "${objtoolopt}" ]; then
@@ -129,9 +130,6 @@ objtool_link()
 			objtoolcmd="check"
 		fi
 		objtoolopt="${objtoolopt} --vmlinux"
-		if [ -n "${CONFIG_CPU_UNRET_ENTRY}" ]; then
-			objtoolopt="${objtoolopt} --unret"
-		fi
 		if [ -z "${CONFIG_FRAME_POINTER}" ]; then
 			objtoolopt="${objtoolopt} --no-fp"
 		fi
@@ -157,60 +155,54 @@ objtool_link()
 # ${2}, ${3}, ... - optional extra .o files
 vmlinux_link()
 {
-	local lds="${objtree}/${KBUILD_LDS}"
 	local output=${1}
-	local objects
-	local strip_debug
+	local objs
+	local libs
+	local ld
+	local ldflags
+	local ldlibs
 
 	info LD ${output}
 
 	# skip output file argument
 	shift
 
+	if [ -n "${CONFIG_LTO_CLANG}" ]; then
+		# Use vmlinux.o instead of performing the slow LTO link again.
+		objs=vmlinux.o
+		libs=
+	else
+		objs="${KBUILD_VMLINUX_OBJS}"
+		libs="${KBUILD_VMLINUX_LIBS}"
+	fi
+
+	if [ "${SRCARCH}" = "um" ]; then
+		wl=-Wl,
+		ld="${CC}"
+		ldflags="${CFLAGS_vmlinux}"
+		ldlibs="-lutil -lrt -lpthread"
+	else
+		wl=
+		ld="${LD}"
+		ldflags="${KBUILD_LDFLAGS} ${LDFLAGS_vmlinux}"
+		ldlibs=
+	fi
+
+	ldflags="${ldflags} ${wl}--script=${objtree}/${KBUILD_LDS}"
+
 	# The kallsyms linking does not need debug symbols included.
 	if [ "$output" != "${output#.tmp_vmlinux.kallsyms}" ] ; then
-		strip_debug=-Wl,--strip-debug
+		ldflags="${ldflags} ${wl}--strip-debug"
 	fi
 
-	if [ "${SRCARCH}" != "um" ]; then
-		if [ -n "${CONFIG_LTO_CLANG}" ]; then
-			# Use vmlinux.o instead of performing the slow LTO
-			# link again.
-			objects="--whole-archive		\
-				vmlinux.o 			\
-				--no-whole-archive		\
-				${@}"
-		else
-			objects="--whole-archive		\
-				${KBUILD_VMLINUX_OBJS}		\
-				--no-whole-archive		\
-				--start-group			\
-				${KBUILD_VMLINUX_LIBS}		\
-				--end-group			\
-				${@}"
-		fi
-
-		${LD} ${KBUILD_LDFLAGS} ${LDFLAGS_vmlinux}	\
-			${strip_debug#-Wl,}			\
-			-o ${output}				\
-			-T ${lds} ${objects}
-	else
-		objects="-Wl,--whole-archive			\
-			${KBUILD_VMLINUX_OBJS}			\
-			-Wl,--no-whole-archive			\
-			-Wl,--start-group			\
-			${KBUILD_VMLINUX_LIBS}			\
-			-Wl,--end-group				\
-			${@}"
-
-		${CC} ${CFLAGS_vmlinux}				\
-			${strip_debug}				\
-			-o ${output}				\
-			-Wl,-T,${lds}				\
-			${objects}				\
-			-lutil -lrt -lpthread
-		rm -f linux
+	if [ -n "${CONFIG_VMLINUX_MAP}" ]; then
+		ldflags="${ldflags} ${wl}-Map=${output}.map"
 	fi
+
+	${ld} ${ldflags} -o ${output}					\
+		${wl}--whole-archive ${objs} ${wl}--no-whole-archive	\
+		${wl}--start-group ${libs} ${wl}--end-group		\
+		$@ ${ldlibs}
 }
 
 # generate .BTF typeinfo from DWARF debuginfo
@@ -266,15 +258,7 @@ kallsyms()
 	fi
 
 	info KSYMS ${2}
-
-	if [ -n "${CONFIG_CFI_CLANG}" ]; then
-		${PERL} ${srctree}/scripts/generate_cfi_kallsyms.pl ${1} | \
-			sort -n > .tmp_kallsyms
-	else
-		${NM} -n ${1} > .tmp_kallsyms
-	fi
-
-	scripts/kallsyms ${kallsymopt} < .tmp_kallsyms > ${2}
+	${NM} -n ${1} | scripts/kallsyms ${kallsymopt} > ${2}
 }
 
 # Perform one step in kallsyms generation, including temporary linking of
@@ -312,28 +296,15 @@ cleanup()
 {
 	rm -f .btf.*
 	rm -f .tmp_System.map
-	rm -f .tmp_kallsyms
 	rm -f .tmp_initcalls.lds
 	rm -f .tmp_symversions.lds
 	rm -f .tmp_vmlinux*
 	rm -f System.map
 	rm -f vmlinux
+	rm -f vmlinux.map
 	rm -f vmlinux.o
+	rm -f .vmlinux.d
 }
-
-on_exit()
-{
-	if [ $? -ne 0 ]; then
-		cleanup
-	fi
-}
-trap on_exit EXIT
-
-on_signals()
-{
-	exit 1
-}
-trap on_signals HUP INT QUIT TERM
 
 # Use "make V=1" to debug this script
 case "${KBUILD_VERBOSE}" in
@@ -456,3 +427,6 @@ if [ -n "${CONFIG_KALLSYMS}" ]; then
 		exit 1
 	fi
 fi
+
+# For fixdep
+echo "vmlinux: $0" > .vmlinux.d

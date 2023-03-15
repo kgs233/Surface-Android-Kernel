@@ -136,8 +136,6 @@ static struct gfs2_sbd *init_sbd(struct super_block *sb)
 
 	init_rwsem(&sdp->sd_log_flush_lock);
 	atomic_set(&sdp->sd_log_in_flight, 0);
-	atomic_set(&sdp->sd_reserving_log, 0);
-	init_waitqueue_head(&sdp->sd_reserving_log_wait);
 	init_waitqueue_head(&sdp->sd_log_flush_wait);
 	atomic_set(&sdp->sd_freeze_state, SFS_UNFROZEN);
 	mutex_init(&sdp->sd_freeze_mutex);
@@ -152,7 +150,6 @@ fail:
 /**
  * gfs2_check_sb - Check superblock
  * @sdp: the filesystem
- * @sb: The superblock
  * @silent: Don't print a message if the check fails
  *
  * Checks the version code of the FS is one that we understand how to
@@ -171,7 +168,8 @@ static int gfs2_check_sb(struct gfs2_sbd *sdp, int silent)
 		return -EINVAL;
 	}
 
-	if (sb->sb_fs_format != GFS2_FORMAT_FS ||
+	if (sb->sb_fs_format < GFS2_FS_FORMAT_MIN ||
+	    sb->sb_fs_format > GFS2_FS_FORMAT_MAX ||
 	    sb->sb_multihost_format != GFS2_FORMAT_MULTI) {
 		fs_warn(sdp, "Unknown on-disk format, unable to mount\n");
 		return -EINVAL;
@@ -179,13 +177,10 @@ static int gfs2_check_sb(struct gfs2_sbd *sdp, int silent)
 
 	if (sb->sb_bsize < 512 || sb->sb_bsize > PAGE_SIZE ||
 	    (sb->sb_bsize & (sb->sb_bsize - 1))) {
-		pr_warn("Invalid superblock size\n");
+		pr_warn("Invalid block size\n");
 		return -EINVAL;
 	}
-	if (sb->sb_bsize_shift != ffs(sb->sb_bsize) - 1) {
-		pr_warn("Invalid block size shift\n");
-		return -EINVAL;
-	}
+
 	return 0;
 }
 
@@ -208,7 +203,6 @@ static void gfs2_sb_in(struct gfs2_sbd *sdp, const void *buf)
 
 	sb->sb_magic = be32_to_cpu(str->sb_header.mh_magic);
 	sb->sb_type = be32_to_cpu(str->sb_header.mh_type);
-	sb->sb_format = be32_to_cpu(str->sb_header.mh_format);
 	sb->sb_fs_format = be32_to_cpu(str->sb_fs_format);
 	sb->sb_multihost_format = be32_to_cpu(str->sb_multihost_format);
 	sb->sb_bsize = be32_to_cpu(str->sb_bsize);
@@ -227,7 +221,7 @@ static void gfs2_sb_in(struct gfs2_sbd *sdp, const void *buf)
  * gfs2_read_super - Read the gfs2 super block from disk
  * @sdp: The GFS2 super block
  * @sector: The location of the super block
- * @error: The error code to return
+ * @silent: Don't print a message if the check fails
  *
  * This uses the bio functions to read the super block from disk
  * because we want to be 100% sure that we never read cached data.
@@ -320,6 +314,13 @@ static int gfs2_read_sb(struct gfs2_sbd *sdp, int silent)
 				     sizeof(struct gfs2_meta_header))
 		* GFS2_NBBY; /* not the rgrp bitmap, subsequent bitmaps only */
 
+	/*
+	 * We always keep at least one block reserved for revokes in
+	 * transactions.  This greatly simplifies allocating additional
+	 * revoke blocks.
+	 */
+	atomic_set(&sdp->sd_log_revokes_available, sdp->sd_ldptrs);
+
 	/* Compute maximum reservation required to add a entry to a directory */
 
 	hash_blocks = DIV_ROUND_UP(sizeof(u64) * BIT(GFS2_DIR_MAX_DEPTH),
@@ -384,10 +385,8 @@ static int init_names(struct gfs2_sbd *sdp, int silent)
 	if (!table[0])
 		table = sdp->sd_vfs->s_id;
 
-	BUILD_BUG_ON(GFS2_LOCKNAME_LEN > GFS2_FSNAME_LEN);
-
-	strscpy(sdp->sd_proto_name, proto, GFS2_LOCKNAME_LEN);
-	strscpy(sdp->sd_table_name, table, GFS2_LOCKNAME_LEN);
+	strlcpy(sdp->sd_proto_name, proto, GFS2_FSNAME_LEN);
+	strlcpy(sdp->sd_table_name, table, GFS2_FSNAME_LEN);
 
 	table = sdp->sd_table_name;
 	while ((table = strchr(table, '/')))
@@ -491,6 +490,19 @@ static int init_sb(struct gfs2_sbd *sdp, int silent)
 	if (ret) {
 		fs_err(sdp, "can't read superblock: %d\n", ret);
 		goto out;
+	}
+
+	switch(sdp->sd_sb.sb_fs_format) {
+	case GFS2_FS_FORMAT_MAX:
+		sb->s_xattr = gfs2_xattr_handlers_max;
+		break;
+
+	case GFS2_FS_FORMAT_MIN:
+		sb->s_xattr = gfs2_xattr_handlers_min;
+		break;
+
+	default:
+		BUG();
 	}
 
 	/* Set up the buffer cache and SB for real */
@@ -602,6 +614,7 @@ static int gfs2_jindex_hold(struct gfs2_sbd *sdp, struct gfs2_holder *ji_gh)
 			break;
 		}
 
+		d_mark_dontcache(jd->jd_inode);
 		spin_lock(&sdp->sd_jindex_spin);
 		jd->jd_jid = sdp->sd_journals++;
 		jip = GFS2_I(jd->jd_inode);
@@ -684,8 +697,16 @@ static int init_statfs(struct gfs2_sbd *sdp)
 		fs_err(sdp, "can't lock local \"sc\" file: %d\n", error);
 		goto free_local;
 	}
+	/* read in the local statfs buffer - other nodes don't change it. */
+	error = gfs2_meta_inode_buffer(ip, &sdp->sd_sc_bh);
+	if (error) {
+		fs_err(sdp, "Cannot read in local statfs: %d\n", error);
+		goto unlock_sd_gh;
+	}
 	return 0;
 
+unlock_sd_gh:
+	gfs2_glock_dq_uninit(&sdp->sd_sc_gh);
 free_local:
 	free_local_statfs_inodes(sdp);
 	iput(pn);
@@ -699,6 +720,7 @@ out:
 static void uninit_statfs(struct gfs2_sbd *sdp)
 {
 	if (!sdp->sd_args.ar_spectator) {
+		brelse(sdp->sd_sc_bh);
 		gfs2_glock_dq_uninit(&sdp->sd_sc_gh);
 		free_local_statfs_inodes(sdp);
 	}
@@ -971,7 +993,6 @@ static const struct lm_lockops nolock_ops = {
 /**
  * gfs2_lm_mount - mount a locking protocol
  * @sdp: the filesystem
- * @args: mount arguments
  * @silent: if 1, don't complain if the FS isn't a GFS2 fs
  *
  * Returns: errno
@@ -1039,13 +1060,14 @@ hostdata_error:
 	}
 
 	if (lm->lm_mount == NULL) {
-		fs_info(sdp, "Now mounting FS...\n");
+		fs_info(sdp, "Now mounting FS (format %u)...\n", sdp->sd_sb.sb_fs_format);
 		complete_all(&sdp->sd_locking_init);
 		return 0;
 	}
 	ret = lm->lm_mount(sdp, table);
 	if (ret == 0)
-		fs_info(sdp, "Joined cluster. Now mounting FS...\n");
+		fs_info(sdp, "Joined cluster. Now mounting FS (format %u)...\n",
+		        sdp->sd_sb.sb_fs_format);
 	complete_all(&sdp->sd_locking_init);
 	return ret;
 }
@@ -1108,8 +1130,7 @@ fail:
 /**
  * gfs2_fill_super - Read in superblock
  * @sb: The VFS superblock
- * @args: Mount options
- * @silent: Don't complain if it's not a GFS2 filesystem
+ * @fc: Mount options and flags
  *
  * Returns: -errno
  */
@@ -1143,7 +1164,6 @@ static int gfs2_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_op = &gfs2_super_ops;
 	sb->s_d_op = &gfs2_dops;
 	sb->s_export_op = &gfs2_export_ops;
-	sb->s_xattr = gfs2_xattr_handlers;
 	sb->s_qcop = &gfs2_quotactl_ops;
 	sb->s_quota_types = QTYPE_MASK_USR | QTYPE_MASK_GRP;
 	sb_dqopt(sb)->flags |= DQUOT_QUOTA_SYS_FILE;
@@ -1191,6 +1211,10 @@ static int gfs2_fill_super(struct super_block *sb, struct fs_context *fc)
 	error = init_sb(sdp, silent);
 	if (error)
 		goto fail_locking;
+
+	/* Turn rgrplvb on by default if fs format is recent enough */
+	if (!sdp->sd_args.ar_got_rgrplvb && sdp->sd_sb.sb_fs_format > 1801)
+		sdp->sd_args.ar_rgrplvb = 1;
 
 	error = wait_on_journal(sdp);
 	if (error)
@@ -1419,13 +1443,13 @@ static int gfs2_parse_param(struct fs_context *fc, struct fs_parameter *param)
 
 	switch (o) {
 	case Opt_lockproto:
-		strscpy(args->ar_lockproto, param->string, GFS2_LOCKNAME_LEN);
+		strlcpy(args->ar_lockproto, param->string, GFS2_LOCKNAME_LEN);
 		break;
 	case Opt_locktable:
-		strscpy(args->ar_locktable, param->string, GFS2_LOCKNAME_LEN);
+		strlcpy(args->ar_locktable, param->string, GFS2_LOCKNAME_LEN);
 		break;
 	case Opt_hostdata:
-		strscpy(args->ar_hostdata, param->string, GFS2_LOCKNAME_LEN);
+		strlcpy(args->ar_hostdata, param->string, GFS2_LOCKNAME_LEN);
 		break;
 	case Opt_spectator:
 		args->ar_spectator = 1;
@@ -1499,6 +1523,7 @@ static int gfs2_parse_param(struct fs_context *fc, struct fs_parameter *param)
 		break;
 	case Opt_rgrplvb:
 		args->ar_rgrplvb = result.boolean;
+		args->ar_got_rgrplvb = 1;
 		break;
 	case Opt_loccookie:
 		args->ar_loccookie = result.boolean;
@@ -1564,9 +1589,7 @@ static int gfs2_reconfigure(struct fs_context *fc)
 			return -EINVAL;
 
 		if (fc->sb_flags & SB_RDONLY) {
-			error = gfs2_make_fs_ro(sdp);
-			if (error)
-				errorfc(fc, "unable to remount read-only");
+			gfs2_make_fs_ro(sdp);
 		} else {
 			error = gfs2_make_fs_rw(sdp);
 			if (error)

@@ -84,8 +84,8 @@ int f2fs_init_casefolded_name(const struct inode *dir,
 
 	if (IS_CASEFOLDED(dir) &&
 	    !is_dot_dotdot(fname->usr_fname->name, fname->usr_fname->len)) {
-		fname->cf_name.name = kmem_cache_alloc(f2fs_cf_name_slab,
-								GFP_NOFS);
+		fname->cf_name.name = f2fs_kmem_cache_alloc(f2fs_cf_name_slab,
+					GFP_NOFS, false, F2FS_SB(sb));
 		if (!fname->cf_name.name)
 			return -ENOMEM;
 		fname->cf_name.len = utf8_casefold(sb->s_encoding,
@@ -455,9 +455,7 @@ struct f2fs_dir_entry *f2fs_find_entry(struct inode *dir,
 
 struct f2fs_dir_entry *f2fs_parent_dir(struct inode *dir, struct page **p)
 {
-	struct qstr dotdot = QSTR_INIT("..", 2);
-
-	return f2fs_find_entry(dir, &dotdot, p);
+	return f2fs_find_entry(dir, &dotdot_name, p);
 }
 
 ino_t f2fs_inode_by_name(struct inode *dir, const struct qstr *qstr,

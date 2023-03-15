@@ -15,12 +15,12 @@
 #include <linux/platform_device.h>
 #include <linux/soc/amlogic/meson-canvas.h>
 
+#include <drm/drm_aperture.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_gem_cma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
-#include <drm/drm_irq.h>
 #include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
@@ -32,6 +32,7 @@
 #include "meson_osd_afbcd.h"
 #include "meson_registers.h"
 #include "meson_venc_cvbs.h"
+#include "meson_encoder_hdmi.h"
 #include "meson_viu.h"
 #include "meson_vpp.h"
 #include "meson_rdma.h"
@@ -90,11 +91,8 @@ static int meson_dumb_create(struct drm_file *file, struct drm_device *dev,
 
 DEFINE_DRM_GEM_CMA_FOPS(fops);
 
-static struct drm_driver meson_driver = {
+static const struct drm_driver meson_driver = {
 	.driver_features	= DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
-
-	/* IRQ */
-	.irq_handler		= meson_irq,
 
 	/* CMA Ops */
 	DRM_GEM_CMA_DRIVER_OPS_WITH_DUMB_CREATE(meson_dumb_create),
@@ -159,23 +157,6 @@ static void meson_vpu_init(struct meson_drm *priv)
 	writel_relaxed(value, priv->io_base + _REG(VPU_WRARB_MODE_L2C1));
 }
 
-static void meson_remove_framebuffers(void)
-{
-	struct apertures_struct *ap;
-
-	ap = alloc_apertures(1);
-	if (!ap)
-		return;
-
-	/* The framebuffer can be located anywhere in RAM */
-	ap->ranges[0].base = 0;
-	ap->ranges[0].size = ~0;
-
-	drm_fb_helper_remove_conflicting_framebuffers(ap, "meson-drm-fb",
-						      false);
-	kfree(ap);
-}
-
 struct meson_drm_soc_attr {
 	struct meson_drm_soc_limits limits;
 	const struct soc_device_attribute *attrs;
@@ -229,8 +210,7 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	priv->compat = match->compat;
 	priv->afbcd.ops = match->afbcd_ops;
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "vpu");
-	regs = devm_ioremap_resource(dev, res);
+	regs = devm_platform_ioremap_resource_byname(pdev, "vpu");
 	if (IS_ERR(regs)) {
 		ret = PTR_ERR(regs);
 		goto free_drm;
@@ -300,8 +280,13 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 		}
 	}
 
-	/* Remove early framebuffers (ie. simplefb) */
-	meson_remove_framebuffers();
+	/*
+	 * Remove early framebuffers (ie. simplefb). The framebuffer can be
+	 * located anywhere in RAM
+	 */
+	ret = drm_aperture_remove_framebuffers(false, &meson_driver);
+	if (ret)
+		goto free_drm;
 
 	ret = drmm_mode_config_init(drm);
 	if (ret)
@@ -320,38 +305,42 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	if (priv->afbcd.ops) {
 		ret = priv->afbcd.ops->init(priv);
 		if (ret)
-			return ret;
+			goto free_drm;
 	}
 
 	/* Encoder Initialization */
 
 	ret = meson_venc_cvbs_create(priv);
 	if (ret)
-		goto free_drm;
+		goto exit_afbcd;
 
 	if (has_components) {
 		ret = component_bind_all(drm->dev, drm);
 		if (ret) {
 			dev_err(drm->dev, "Couldn't bind all components\n");
-			goto free_drm;
+			goto exit_afbcd;
 		}
 	}
 
+	ret = meson_encoder_hdmi_init(priv);
+	if (ret)
+		goto exit_afbcd;
+
 	ret = meson_plane_create(priv);
 	if (ret)
-		goto free_drm;
+		goto exit_afbcd;
 
 	ret = meson_overlay_create(priv);
 	if (ret)
-		goto free_drm;
+		goto exit_afbcd;
 
 	ret = meson_crtc_create(priv);
 	if (ret)
-		goto free_drm;
+		goto exit_afbcd;
 
-	ret = drm_irq_install(drm, priv->vsync_irq);
+	ret = request_irq(priv->vsync_irq, meson_irq, 0, drm->driver->name, drm);
 	if (ret)
-		goto free_drm;
+		goto exit_afbcd;
 
 	drm_mode_config_reset(drm);
 
@@ -368,7 +357,10 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	return 0;
 
 uninstall_irq:
-	drm_irq_uninstall(drm);
+	free_irq(priv->vsync_irq, drm);
+exit_afbcd:
+	if (priv->afbcd.ops)
+		priv->afbcd.ops->exit(priv);
 free_drm:
 	drm_dev_put(drm);
 
@@ -395,9 +387,9 @@ static void meson_drv_unbind(struct device *dev)
 	drm_dev_unregister(drm);
 	drm_kms_helper_poll_fini(drm);
 	drm_atomic_helper_shutdown(drm);
-	component_unbind_all(dev, drm);
-	drm_irq_uninstall(drm);
+	free_irq(priv->vsync_irq, drm);
 	drm_dev_put(drm);
+	component_unbind_all(dev, drm);
 
 	if (priv->afbcd.ops)
 		priv->afbcd.ops->exit(priv);

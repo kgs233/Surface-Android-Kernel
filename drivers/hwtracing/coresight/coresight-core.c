@@ -21,6 +21,7 @@
 
 #include "coresight-etm-perf.h"
 #include "coresight-priv.h"
+#include "coresight-syscfg.h"
 
 static DEFINE_MUTEX(coresight_mutex);
 static DEFINE_PER_CPU(struct coresight_device *, csdev_sink);
@@ -99,7 +100,7 @@ static int coresight_id_match(struct device *dev, void *data)
 	    i_csdev->type != CORESIGHT_DEV_TYPE_SOURCE)
 		return 0;
 
-	/* Get the source ID for both compoment */
+	/* Get the source ID for both components */
 	trace_id = source_ops(csdev)->trace_id(csdev);
 	i_trace_id = source_ops(i_csdev)->trace_id(i_csdev);
 
@@ -445,7 +446,7 @@ static int coresight_enable_source(struct coresight_device *csdev, u32 mode)
 			if (ret) {
 				coresight_control_assoc_ectdev(csdev, false);
 				return ret;
-			};
+			}
 		}
 		csdev->enable = true;
 	}
@@ -459,7 +460,7 @@ static int coresight_enable_source(struct coresight_device *csdev, u32 mode)
  *  coresight_disable_source - Drop the reference count by 1 and disable
  *  the device if there are no users left.
  *
- *  @csdev - The coresight device to disable
+ *  @csdev: The coresight device to disable
  *
  *  Returns true if the device has been disabled.
  */
@@ -690,6 +691,9 @@ struct coresight_device *coresight_get_sink_by_id(u32 id)
 /**
  * coresight_get_ref- Helper function to increase reference count to module
  * and device.
+ *
+ * @csdev: The coresight device to get a reference on.
+ *
  * Return true in successful case and power up the device.
  * Return false when failed to get reference of module.
  */
@@ -709,6 +713,8 @@ static inline bool coresight_get_ref(struct coresight_device *csdev)
 /**
  * coresight_put_ref- Helper function to decrease reference count to module
  * and device. Power off the device.
+ *
+ * @csdev: The coresight device to decrement a reference from.
  */
 static inline void coresight_put_ref(struct coresight_device *csdev)
 {
@@ -771,6 +777,7 @@ static void coresight_drop_device(struct coresight_device *csdev)
 /**
  * _coresight_build_path - recursively build a path from a @csdev to a sink.
  * @csdev:	The device to start from.
+ * @sink:	The final sink we want in this path.
  * @path:	The list to add devices to.
  *
  * The tree of Coresight device is traversed until an activated sink is
@@ -880,7 +887,6 @@ void coresight_release_path(struct list_head *path)
 	}
 
 	kfree(path);
-	path = NULL;
 }
 
 /* return true if the device is a suitable type for a default sink */
@@ -1736,9 +1742,9 @@ char *coresight_alloc_device_name(struct coresight_dev_list *dict,
 	if (idx < 0) {
 		/* Make space for the new entry */
 		idx = dict->nr_idx;
-		list = krealloc(dict->fwnode_list,
-				(idx + 1) * sizeof(*dict->fwnode_list),
-				GFP_KERNEL);
+		list = krealloc_array(dict->fwnode_list,
+				      idx + 1, sizeof(*dict->fwnode_list),
+				      GFP_KERNEL);
 		if (ZERO_OR_NULL_PTR(list)) {
 			idx = -ENOMEM;
 			goto done;
@@ -1770,13 +1776,22 @@ static int __init coresight_init(void)
 
 	ret = etm_perf_init();
 	if (ret)
-		bus_unregister(&coresight_bustype);
+		goto exit_bus_unregister;
 
+	/* initialise the coresight syscfg API */
+	ret = cscfg_init();
+	if (!ret)
+		return 0;
+
+	etm_perf_exit();
+exit_bus_unregister:
+	bus_unregister(&coresight_bustype);
 	return ret;
 }
 
 static void __exit coresight_exit(void)
 {
+	cscfg_exit();
 	etm_perf_exit();
 	bus_unregister(&coresight_bustype);
 }

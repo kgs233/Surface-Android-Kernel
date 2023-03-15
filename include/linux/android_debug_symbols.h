@@ -21,6 +21,8 @@ enum android_debug_symbol {
 	ADS_SLAB_MUTEX,
 	ADS_MIN_LOW_PFN,
 	ADS_MAX_PFN,
+	ADS_VMALLOC_NR_PAGES,
+	ADS_PCPU_NR_PAGES,
 #ifdef CONFIG_PAGE_OWNER
 	ADS_PAGE_OWNER_ENABLED,
 #endif
@@ -36,6 +38,10 @@ enum android_debug_symbol {
 	ADS_STACK_GUARD_GAP,
 #ifdef CONFIG_SYSCTL
 	ADS_SYSCTL_LEGACY_VA_LAYOUT,
+#endif
+	ADS_SHOW_MEM,
+#if !defined (__GENKSYMS__) && defined(CONFIG_ARM64)
+	ADS_PUT_TASK_STACK,
 #endif
 	ADS_END
 };

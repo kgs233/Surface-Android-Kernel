@@ -143,7 +143,7 @@ static DEFINE_SPINLOCK(i8042_lock);
 /*
  * Writers to AUX and KBD ports as well as users issuing i8042_command
  * directly should acquire i8042_mutex (by means of calling
- * i8042_lock_chip() and i8042_unlock_ship() helpers) to ensure that
+ * i8042_lock_chip() and i8042_unlock_chip() helpers) to ensure that
  * they do not disturb each other (unfortunately in many i8042
  * implementations write to one of the ports will immediately abort
  * command that is being processed by another port).
@@ -983,7 +983,7 @@ static int i8042_controller_selftest(void)
 }
 
 /*
- * i8042_controller init initializes the i8042 controller, and,
+ * i8042_controller_init initializes the i8042 controller, and,
  * most importantly, sets it into non-xlated mode if that's
  * desired.
  */
@@ -1543,6 +1543,8 @@ static int i8042_probe(struct platform_device *dev)
 {
 	int error;
 
+	i8042_platform_device = dev;
+
 	if (i8042_reset == I8042_RESET_ALWAYS) {
 		error = i8042_controller_selftest();
 		if (error)
@@ -1580,6 +1582,7 @@ static int i8042_probe(struct platform_device *dev)
 	i8042_free_aux_ports();	/* in case KBD failed but AUX not */
 	i8042_free_irqs();
 	i8042_controller_reset(false);
+	i8042_platform_device = NULL;
 
 	return error;
 }
@@ -1589,6 +1592,7 @@ static int i8042_remove(struct platform_device *dev)
 	i8042_unregister_ports();
 	i8042_free_irqs();
 	i8042_controller_reset(false);
+	i8042_platform_device = NULL;
 
 	return 0;
 }

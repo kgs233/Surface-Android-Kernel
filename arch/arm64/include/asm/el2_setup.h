@@ -33,8 +33,7 @@
  * EL2.
  */
 .macro __init_el2_timers
-	mrs	x0, cnthctl_el2
-	orr	x0, x0, #3			// Enable EL1 physical timers
+	mov	x0, #3				// Enable EL1 physical timers
 	msr	cnthctl_el2, x0
 	msr	cntvoff_el2, xzr		// Clear virtual offset
 .endm
@@ -144,9 +143,54 @@
 .Lskip_sve_\@:
 .endm
 
+/* Disable any fine grained traps */
+.macro __init_el2_fgt
+	mrs	x1, id_aa64mmfr0_el1
+	ubfx	x1, x1, #ID_AA64MMFR0_FGT_SHIFT, #4
+	cbz	x1, .Lskip_fgt_\@
+
+	mov	x0, xzr
+	mrs	x1, id_aa64dfr0_el1
+	ubfx	x1, x1, #ID_AA64DFR0_PMSVER_SHIFT, #4
+	cmp	x1, #3
+	b.lt	.Lset_fgt_\@
+	/* Disable PMSNEVFR_EL1 read and write traps */
+	orr	x0, x0, #(1 << 62)
+
+.Lset_fgt_\@:
+	msr_s	SYS_HDFGRTR_EL2, x0
+	msr_s	SYS_HDFGWTR_EL2, x0
+	msr_s	SYS_HFGRTR_EL2, xzr
+	msr_s	SYS_HFGWTR_EL2, xzr
+	msr_s	SYS_HFGITR_EL2, xzr
+
+	mrs	x1, id_aa64pfr0_el1		// AMU traps UNDEF without AMU
+	ubfx	x1, x1, #ID_AA64PFR0_AMU_SHIFT, #4
+	cbz	x1, .Lskip_fgt_\@
+
+	msr_s	SYS_HAFGRTR_EL2, xzr
+.Lskip_fgt_\@:
+.endm
+
 .macro __init_el2_nvhe_prepare_eret
 	mov	x0, #INIT_PSTATE_EL1
 	msr	spsr_el2, x0
+.endm
+
+.macro __init_el2_mpam
+#ifdef CONFIG_ARM64_MPAM
+	/* Memory Partioning And Monitoring: disable EL2 traps */
+	mrs	x1, id_aa64pfr0_el1
+	ubfx	x0, x1, #ID_AA64PFR0_MPAM_SHIFT, #4
+	cbz	x0, .Lskip_mpam_\@		// skip if no MPAM
+	msr_s	SYS_MPAM0_EL1, xzr		// use the default partition..
+	msr_s	SYS_MPAM2_EL2, xzr		// ..and disable lower traps
+	msr_s	SYS_MPAM1_EL1, xzr
+	mrs_s	x0, SYS_MPAMIDR_EL1
+	tbz	x0, #17, .Lskip_mpam_\@		// skip if no MPAMHCR reg
+	msr_s	SYS_MPAMHCR_EL2, xzr		// clear TRAP_MPAMIDR_EL1 -> EL2
+.Lskip_mpam_\@:
+#endif /* CONFIG_ARM64_MPAM */
 .endm
 
 /**
@@ -165,9 +209,11 @@
 	__init_el2_stage2
 	__init_el2_gicv3
 	__init_el2_hstr
+	__init_el2_mpam
 	__init_el2_nvhe_idregs
 	__init_el2_nvhe_cptr
 	__init_el2_nvhe_sve
+	__init_el2_fgt
 	__init_el2_nvhe_prepare_eret
 .endm
 

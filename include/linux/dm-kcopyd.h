@@ -21,7 +21,6 @@
 
 #define DM_KCOPYD_IGNORE_ERROR 1
 #define DM_KCOPYD_WRITE_SEQ    2
-#define DM_KCOPYD_SNAP_MERGE   3
 
 struct dm_kcopyd_throttle {
 	unsigned throttle;
@@ -52,6 +51,7 @@ MODULE_PARM_DESC(name, description)
 struct dm_kcopyd_client;
 struct dm_kcopyd_client *dm_kcopyd_client_create(struct dm_kcopyd_throttle *throttle);
 void dm_kcopyd_client_destroy(struct dm_kcopyd_client *kc);
+void dm_kcopyd_client_flush(struct dm_kcopyd_client *kc);
 
 /*
  * Submit a copy job to kcopyd.  This is built on top of the

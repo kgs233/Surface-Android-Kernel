@@ -6,7 +6,7 @@
  * device allows user-space to control the clipboard detachment process on
  * Surface Book series devices.
  *
- * Copyright (C) 2020 Maximilian Luz <luzmaximilian@gmail.com>
+ * Copyright (C) 2020-2021 Maximilian Luz <luzmaximilian@gmail.com>
  */
 
 #ifndef _UAPI_LINUX_SURFACE_AGGREGATOR_DTX_H
@@ -29,7 +29,7 @@
 #define SDTX_ERR_HW(code)		((code) | SDTX_CATEGORY_HARDWARE_ERROR)
 #define SDTX_UNKNOWN(code)		((code) | SDTX_CATEGORY_UNKNOWN)
 
-#define SDTX_SUCCESS(value)	(SDTX_CATEGORY(value) == SDTX_CATEGORY_STATUS)
+#define SDTX_SUCCESS(value)		(SDTX_CATEGORY(value) == SDTX_CATEGORY_STATUS)
 
 /* Latch status values */
 #define SDTX_LATCH_CLOSED		SDTX_STATUS(0x00)
@@ -99,7 +99,7 @@ struct sdtx_event {
  * @SDTX_EVENT_LATCH_STATUS:    Latch status change event type.
  * @SDTX_EVENT_DEVICE_MODE:     Device mode change event type.
  *
- * Used in @struct sdtx_event to describe the type of the event. Further event
+ * Used in &struct sdtx_event to describe the type of the event. Further event
  * codes are reserved for future use. Any event parser should be able to
  * gracefully handle unknown events, i.e. by simply skipping them.
  *

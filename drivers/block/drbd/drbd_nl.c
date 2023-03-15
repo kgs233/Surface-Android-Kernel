@@ -918,7 +918,7 @@ void drbd_resume_io(struct drbd_device *device)
 		wake_up(&device->misc_wait);
 }
 
-/**
+/*
  * drbd_determine_dev_size() -  Sets the right device size obeying all constraints
  * @device:	DRBD device.
  *
@@ -1136,7 +1136,7 @@ drbd_new_dev_size(struct drbd_device *device, struct drbd_backing_dev *bdev,
 	return size;
 }
 
-/**
+/*
  * drbd_check_al_size() - Ensures that the AL is of the right size
  * @device:	DRBD device.
  *
@@ -1364,7 +1364,7 @@ static void drbd_setup_queue_param(struct drbd_device *device, struct drbd_backi
 
 	if (b) {
 		blk_stack_limits(&q->limits, &b->limits, 0);
-		blk_queue_update_readahead(q);
+		disk_update_readahead(device->vdisk);
 	}
 	fixup_discard_if_not_supported(q);
 	fixup_write_zeroes(device, q);

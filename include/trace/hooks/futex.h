@@ -5,12 +5,17 @@
 #define TRACE_INCLUDE_PATH trace/hooks
 #if !defined(_TRACE_HOOK_FUTEX_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_HOOK_FUTEX_H
-#include <linux/tracepoint.h>
 #include <trace/hooks/vendor_hooks.h>
-#include <linux/plist.h>
+
 #ifndef __GENKSYMS__
+#include <linux/plist.h>
 #include <linux/futex.h>
 #endif
+
+struct plist_node;
+struct plist_head;
+struct task_struct;
+union futex_key;
 
 /*
  * Following tracepoints are not exported in tracefs and provide a
@@ -55,8 +60,6 @@ DECLARE_HOOK(android_vh_futex_wake_this,
 DECLARE_HOOK(android_vh_futex_wake_up_q_finish,
 	TP_PROTO(int nr_wake, int target_nr),
 	TP_ARGS(nr_wake, target_nr));
-
-/* macro versions of hooks are no longer required */
 
 #endif /* _TRACE_HOOK_FUTEX_H */
 /* This part must be outside protection */

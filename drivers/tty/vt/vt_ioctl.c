@@ -512,12 +512,12 @@ static int vt_io_ioctl(struct vc_data *vc, unsigned int cmd, void __user *up,
 {
 	switch (cmd) {
 	case PIO_CMAP:
-                if (!perm)
+		if (!perm)
 			return -EPERM;
 		return con_set_cmap(up);
 
 	case GIO_CMAP:
-                return con_get_cmap(up);
+		return con_get_cmap(up);
 
 	case PIO_SCRNMAP:
 		if (!perm)
@@ -970,8 +970,7 @@ void reset_vc(struct vc_data *vc)
 	put_pid(vc->vt_pid);
 	vc->vt_pid = NULL;
 	vc->vt_newvt = -1;
-	if (!in_interrupt())    /* Via keyboard.c:SAK() - akpm */
-		reset_palette(vc);
+	reset_palette(vc);
 }
 
 void vc_SAK(struct work_struct *work)

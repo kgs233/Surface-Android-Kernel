@@ -18,7 +18,6 @@
 #include <linux/pci.h>
 #include <linux/usb.h>
 #include <linux/version.h>
-#include <trace/hooks/v4l2mc.h>
 
 #include <media/media-device.h>
 #include <media/media-devnode.h>
@@ -204,7 +203,6 @@ static long media_device_setup_link(struct media_device *mdev, void *arg)
 	struct media_link *link = NULL;
 	struct media_entity *source;
 	struct media_entity *sink;
-	int ret = 0;
 
 	/* Find the source and sink entities and link.
 	 */
@@ -223,13 +221,9 @@ static long media_device_setup_link(struct media_device *mdev, void *arg)
 	if (link == NULL)
 		return -EINVAL;
 
-	/* Setup the link on both entities */
-	trace_android_vh_media_device_setup_link(link, linkd, &ret);
-	trace_android_rvh_media_device_setup_link(link, linkd, &ret);
-	if (ret)
-		return ret;
-
 	memset(linkd->reserved, 0, sizeof(linkd->reserved));
+
+	/* Setup the link on both entities. */
 	return __media_entity_setup_link(link, linkd->flags);
 }
 
@@ -562,7 +556,7 @@ static const struct media_file_operations media_device_fops = {
  * sysfs
  */
 
-static ssize_t show_model(struct device *cd,
+static ssize_t model_show(struct device *cd,
 			  struct device_attribute *attr, char *buf)
 {
 	struct media_devnode *devnode = to_media_devnode(cd);
@@ -571,7 +565,7 @@ static ssize_t show_model(struct device *cd,
 	return sprintf(buf, "%.*s\n", (int)sizeof(mdev->model), mdev->model);
 }
 
-static DEVICE_ATTR(model, S_IRUGO, show_model, NULL);
+static DEVICE_ATTR_RO(model);
 
 /* -----------------------------------------------------------------------------
  * Registration/unregistration

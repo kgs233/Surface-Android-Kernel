@@ -638,7 +638,7 @@ static void mlx5_tracer_handle_timestamp_trace(struct mlx5_fw_tracer *tracer,
 			trace_timestamp = (timestamp_event.timestamp & MASK_52_7) |
 					  (str_frmt->timestamp & MASK_6_0);
 		else
-			trace_timestamp = ((timestamp_event.timestamp - 1) & MASK_52_7) |
+			trace_timestamp = ((timestamp_event.timestamp & MASK_52_7) - 1) |
 					  (str_frmt->timestamp & MASK_6_0);
 
 		mlx5_tracer_print_trace(str_frmt, dev, trace_timestamp);
@@ -1112,7 +1112,7 @@ int mlx5_fw_tracer_reload(struct mlx5_fw_tracer *tracer)
 	int err;
 
 	if (IS_ERR_OR_NULL(tracer))
-		return -EINVAL;
+		return 0;
 
 	dev = tracer->dev;
 	mlx5_fw_tracer_cleanup(tracer);
@@ -1138,8 +1138,7 @@ static int fw_tracer_event(struct notifier_block *nb, unsigned long action, void
 
 	switch (eqe->sub_type) {
 	case MLX5_TRACER_SUBTYPE_OWNERSHIP_CHANGE:
-		if (test_bit(MLX5_INTERFACE_STATE_UP, &dev->intf_state))
-			queue_work(tracer->work_queue, &tracer->ownership_change_work);
+		queue_work(tracer->work_queue, &tracer->ownership_change_work);
 		break;
 	case MLX5_TRACER_SUBTYPE_TRACES_AVAILABLE:
 		queue_work(tracer->work_queue, &tracer->handle_traces_work);

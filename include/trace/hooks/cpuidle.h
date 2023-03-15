@@ -7,15 +7,13 @@
 #if !defined(_TRACE_HOOK_CPUIDLE_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_HOOK_CPUIDLE_H
 
-#include <linux/tracepoint.h>
 #include <trace/hooks/vendor_hooks.h>
 
 #ifdef __GENKSYMS__
-struct cpuidle_device;
-#else
-/* struct cpuidle_device */
 #include <linux/cpuidle.h>
-#endif /* __GENKSYMS__ */
+#endif
+
+struct cpuidle_device;
 
 DECLARE_HOOK(android_vh_cpu_idle_enter,
 	TP_PROTO(int *state, struct cpuidle_device *dev),
@@ -23,8 +21,6 @@ DECLARE_HOOK(android_vh_cpu_idle_enter,
 DECLARE_HOOK(android_vh_cpu_idle_exit,
 	TP_PROTO(int state, struct cpuidle_device *dev),
 	TP_ARGS(state, dev))
-
-/* macro versions of hooks are no longer required */
 
 #endif /* _TRACE_HOOK_CPUIDLE_H */
 /* This part must be outside protection */

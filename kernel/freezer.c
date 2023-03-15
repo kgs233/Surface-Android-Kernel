@@ -13,9 +13,6 @@
 #include <linux/kthread.h>
 #include <linux/mmu_context.h>
 
-#undef CREATE_TRACE_POINT
-#include <trace/hooks/cgroup.h>
-
 /* total number of freezing conditions in effect */
 atomic_t system_freezing_cnt = ATOMIC_INIT(0);
 EXPORT_SYMBOL(system_freezing_cnt);
@@ -56,13 +53,16 @@ bool freezing_slow_path(struct task_struct *p)
 }
 EXPORT_SYMBOL(freezing_slow_path);
 
+#undef CREATE_TRACE_POINT
+#include <trace/hooks/cgroup.h>
+
 /* Refrigerator is place where frozen processes are stored :-). */
 bool __refrigerator(bool check_kthr_stop)
 {
 	/* Hmm, should we be allowed to suspend when there are realtime
 	   processes around? */
 	bool was_frozen = false;
-	long save = current->state;
+	unsigned int save = get_current_state();
 
 	pr_debug("%s entered refrigerator\n", current->comm);
 

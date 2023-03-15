@@ -7,7 +7,6 @@
 #if !defined(_TRACE_HOOK_EPOCH_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_HOOK_EPOCH_H
 
-#include <linux/tracepoint.h>
 #include <trace/hooks/vendor_hooks.h>
 
 DECLARE_HOOK(android_vh_show_suspend_epoch_val,
@@ -17,8 +16,6 @@ DECLARE_HOOK(android_vh_show_suspend_epoch_val,
 DECLARE_HOOK(android_vh_show_resume_epoch_val,
 	TP_PROTO(u64 resume_cycles),
 	TP_ARGS(resume_cycles));
-
-/* macro versions of hooks are no longer required */
 
 #endif /* _TRACE_HOOK_EPOCH_H */
 /* This part must be outside protection */

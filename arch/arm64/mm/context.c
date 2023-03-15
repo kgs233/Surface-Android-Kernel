@@ -338,12 +338,7 @@ EXPORT_SYMBOL_GPL(arm64_mm_context_put);
 /* Errata workaround post TTBRx_EL1 update. */
 asmlinkage void post_ttbr_update_workaround(void)
 {
-	if (!IS_ENABLED(CONFIG_CAVIUM_ERRATUM_27456))
-		return;
-
-	asm(ALTERNATIVE("nop; nop; nop",
-			"ic iallu; dsb nsh; isb",
-			ARM64_WORKAROUND_CAVIUM_27456));
+	return;
 }
 
 void cpu_do_switch_mm(phys_addr_t pgd_phys, struct mm_struct *mm)
@@ -402,14 +397,12 @@ static int asids_init(void)
 {
 	asid_bits = get_cpu_asid_bits();
 	atomic64_set(&asid_generation, ASID_FIRST_VERSION);
-	asid_map = kcalloc(BITS_TO_LONGS(NUM_USER_ASIDS), sizeof(*asid_map),
-			   GFP_KERNEL);
+	asid_map = bitmap_zalloc(NUM_USER_ASIDS, GFP_KERNEL);
 	if (!asid_map)
 		panic("Failed to allocate bitmap for %lu ASIDs\n",
 		      NUM_USER_ASIDS);
 
-	pinned_asid_map = kcalloc(BITS_TO_LONGS(NUM_USER_ASIDS),
-				  sizeof(*pinned_asid_map), GFP_KERNEL);
+	pinned_asid_map = bitmap_zalloc(NUM_USER_ASIDS, GFP_KERNEL);
 	nr_pinned_asids = 0;
 
 	/*

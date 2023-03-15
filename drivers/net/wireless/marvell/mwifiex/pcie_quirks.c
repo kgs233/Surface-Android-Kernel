@@ -1,12 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
- * File for PCIe quirks.
- */
-
-/* The low-level PCI operations will be performed in this file. Therefore,
- * let's use dev_*() instead of mwifiex_dbg() here to avoid troubles (e.g.
- * to avoid using mwifiex_adapter struct before init or wifi is powered
- * down, or causes NULL ptr deref).
+ * NXP Wireless LAN device driver: PCIE and platform specific quirks
+ *
+ * This software file (the "File") is distributed by NXP
+ * under the terms of the GNU General Public License Version 2, June 1991
+ * (the "License").  You may use, redistribute and/or modify this File in
+ * accordance with the terms and conditions of the License, a copy of which
+ * is available by writing to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
+ * worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
+ *
+ * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
+ * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
+ * this warranty disclaimer.
  */
 
 #include <linux/acpi.h>
@@ -124,14 +130,6 @@ static const struct dmi_system_id mwifiex_quirk_table[] = {
 			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "OEMB"),
 		},
 		.driver_data = (void *)QUIRK_FW_RST_WSID_S3,
-	},
-	{
-		.ident = "Surface Pro 3",
-		.matches = {
-			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Microsoft Corporation"),
-			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Surface Pro 3"),
-		},
-		.driver_data = 0,
 	},
 	{}
 };

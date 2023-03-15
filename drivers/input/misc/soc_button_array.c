@@ -18,10 +18,6 @@
 #include <linux/gpio.h>
 #include <linux/platform_device.h>
 
-static bool use_low_level_irq;
-module_param(use_low_level_irq, bool, 0444);
-MODULE_PARM_DESC(use_low_level_irq, "Use low-level triggered IRQ instead of edge triggered");
-
 struct soc_button_info {
 	const char *name;
 	int acpi_index;
@@ -75,13 +71,6 @@ static const struct dmi_system_id dmi_use_low_level_irq[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Aspire SW5-012"),
-		},
-	},
-	{
-		/* Acer Switch V 10 SW5-017, same issue as Acer Switch 10 SW5-012. */
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "SW5-017"),
 		},
 	},
 	{
@@ -175,8 +164,7 @@ soc_button_device_create(struct platform_device *pdev,
 		}
 
 		/* See dmi_use_low_level_irq[] comment */
-		if (!autorepeat && (use_low_level_irq ||
-				    dmi_check_system(dmi_use_low_level_irq))) {
+		if (!autorepeat && dmi_check_system(dmi_use_low_level_irq)) {
 			irq_set_irq_type(irq, IRQ_TYPE_LEVEL_LOW);
 			gpio_keys[n_buttons].irq = irq;
 			gpio_keys[n_buttons].gpio = -ENOENT;
@@ -486,8 +474,8 @@ static const struct soc_device_data soc_device_INT33D3 = {
  * Both, the Surface Pro 4 (surfacepro3_button.c) and the above mentioned
  * devices use MSHW0040 for power and volume buttons, however the way they
  * have to be addressed differs. Make sure that we only load this drivers
- * for the correct devices by checking the OEM Platform Revision provided by
- * the _DSM method.
+ * for the correct devices by checking if the OEM Platform Revision DSM call
+ * exists.
  */
 #define MSHW0040_DSM_REVISION		0x01
 #define MSHW0040_DSM_GET_OMPR		0x02	// get OEM Platform Revision
@@ -498,31 +486,14 @@ static const guid_t MSHW0040_DSM_UUID =
 static int soc_device_check_MSHW0040(struct device *dev)
 {
 	acpi_handle handle = ACPI_HANDLE(dev);
-	union acpi_object *result;
-	u64 oem_platform_rev = 0;	// valid revisions are nonzero
+	bool exists;
 
-	// get OEM platform revision
-	result = acpi_evaluate_dsm_typed(handle, &MSHW0040_DSM_UUID,
-					 MSHW0040_DSM_REVISION,
-					 MSHW0040_DSM_GET_OMPR, NULL,
-					 ACPI_TYPE_INTEGER);
+	// check if OEM platform revision DSM call exists
+	exists = acpi_check_dsm(handle, &MSHW0040_DSM_UUID,
+				MSHW0040_DSM_REVISION,
+				BIT(MSHW0040_DSM_GET_OMPR));
 
-	if (result) {
-		oem_platform_rev = result->integer.value;
-		ACPI_FREE(result);
-	}
-
-	/*
-	 * If the revision is zero here, the _DSM evaluation has failed. This
-	 * indicates that we have a Pro 4 or Book 1 and this driver should not
-	 * be used.
-	 */
-	if (oem_platform_rev == 0)
-		return -ENODEV;
-
-	dev_dbg(dev, "OEM Platform Revision %llu\n", oem_platform_rev);
-
-	return 0;
+	return exists ? 0 : -ENODEV;
 }
 
 /*

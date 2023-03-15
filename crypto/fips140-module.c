@@ -21,7 +21,7 @@
 #include <crypto/aead.h>
 #include <crypto/aes.h>
 #include <crypto/hash.h>
-#include <crypto/sha.h>
+#include <crypto/sha2.h>
 #include <crypto/skcipher.h>
 #include <crypto/rng.h>
 #include <trace/hooks/fips140.h>

@@ -61,8 +61,8 @@ the *open* state, the clipboard can be removed by a user.
 
 The latch can additionally be locked and, correspondingly, unlocked, which
 can influence the detachment procedure. Specifically, this locking mechanism
-is intended to prevent the the dGPU, positioned in the base of the device,
-from being hot-unplugged while in use. More details can be found in the
+is intended to prevent the dGPU, positioned in the base of the device, from
+being hot-unplugged while in use. More details can be found in the
 documentation for the detachment procedure below. By default, the latch is
 unlocked.
 
@@ -137,12 +137,12 @@ Valid responses by a user-space daemon to a detachment request event are:
 See :ref:`ioctls` for more details on these responses.
 
 It is important to note that, if the user presses the detach button at any
-point when a detachment operation is in progress (i.e. after the the EC has
-sent the initial *detach-request* event (``SDTX_EVENT_REQUEST``) and before
-it received the corresponding response concluding the process), the
-detachment process is canceled on the EC-level and an identical event is
-being sent. Thus a *detach-request* event, by itself, does not signal the
-start of the detachment process.
+point when a detachment operation is in progress (i.e. after the EC has sent
+the initial *detach-request* event (``SDTX_EVENT_REQUEST``) and before it
+received the corresponding response concluding the process), the detachment
+process is canceled on the EC-level and an identical event is being sent.
+Thus a *detach-request* event, by itself, does not signal the start of the
+detachment process.
 
 The detachment process may further be canceled by the EC due to hardware
 failures or a low clipboard battery. This is done via a cancel event
@@ -690,10 +690,10 @@ A Note on Base IDs
 ------------------
 
 Base types/IDs provided via ``SDTX_EVENT_BASE_CONNECTION`` or
-``SDTX_IOCTL_GET_BASE_INFO`` are directly forwarded from from the EC in the
-lower byte of the combined |__u16| value, with the driver storing the EC
-type from which this ID comes in the high byte (without this, base IDs over
-different types of ECs may be overlapping).
+``SDTX_IOCTL_GET_BASE_INFO`` are directly forwarded from the EC in the lower
+byte of the combined |__u16| value, with the driver storing the EC type from
+which this ID comes in the high byte (without this, base IDs over different
+types of ECs may be overlapping).
 
 The ``SDTX_DEVICE_TYPE()`` macro can be used to determine the EC device
 type. This can be one of
@@ -710,3 +710,9 @@ Structures and Enums
 --------------------
 
 .. kernel-doc:: include/uapi/linux/surface_aggregator/dtx.h
+
+API Users
+=========
+
+A user-space daemon utilizing this API can be found at
+https://github.com/linux-surface/surface-dtx-daemon.

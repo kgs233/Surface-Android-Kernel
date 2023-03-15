@@ -22,7 +22,6 @@
 #include <linux/vmalloc.h>
 
 #include "page_pool.h"
-#include "deferred-free-helper.h"
 
 static struct dma_heap *sys_heap;
 static struct dma_heap *sys_uncached_heap;
@@ -35,7 +34,6 @@ struct system_heap_buffer {
 	struct sg_table sg_table;
 	int vmap_cnt;
 	void *vaddr;
-	struct deferred_freelist_item deferred_free;
 
 	bool uncached;
 };
@@ -269,31 +267,35 @@ static void *system_heap_do_vmap(struct system_heap_buffer *buffer)
 	return vaddr;
 }
 
-static void *system_heap_vmap(struct dma_buf *dmabuf)
+static int system_heap_vmap(struct dma_buf *dmabuf, struct dma_buf_map *map)
 {
 	struct system_heap_buffer *buffer = dmabuf->priv;
 	void *vaddr;
+	int ret = 0;
 
 	mutex_lock(&buffer->lock);
 	if (buffer->vmap_cnt) {
 		buffer->vmap_cnt++;
-		vaddr = buffer->vaddr;
+		dma_buf_map_set_vaddr(map, buffer->vaddr);
 		goto out;
 	}
 
 	vaddr = system_heap_do_vmap(buffer);
-	if (IS_ERR(vaddr))
+	if (IS_ERR(vaddr)) {
+		ret = PTR_ERR(vaddr);
 		goto out;
+	}
 
 	buffer->vaddr = vaddr;
 	buffer->vmap_cnt++;
+	dma_buf_map_set_vaddr(map, buffer->vaddr);
 out:
 	mutex_unlock(&buffer->lock);
 
-	return vaddr;
+	return ret;
 }
 
-static void system_heap_vunmap(struct dma_buf *dmabuf, void *vaddr)
+static void system_heap_vunmap(struct dma_buf *dmabuf, struct dma_buf_map *map)
 {
 	struct system_heap_buffer *buffer = dmabuf->priv;
 
@@ -303,6 +305,7 @@ static void system_heap_vunmap(struct dma_buf *dmabuf, void *vaddr)
 		buffer->vaddr = NULL;
 	}
 	mutex_unlock(&buffer->lock);
+	dma_buf_map_clear(map);
 }
 
 static int system_heap_zero_buffer(struct system_heap_buffer *buffer)
@@ -323,44 +326,28 @@ static int system_heap_zero_buffer(struct system_heap_buffer *buffer)
 	return ret;
 }
 
-static void system_heap_buf_free(struct deferred_freelist_item *item,
-				 enum df_reason reason)
+static void system_heap_dma_buf_release(struct dma_buf *dmabuf)
 {
-	struct system_heap_buffer *buffer;
+	struct system_heap_buffer *buffer = dmabuf->priv;
 	struct sg_table *table;
 	struct scatterlist *sg;
 	int i, j;
 
-	buffer = container_of(item, struct system_heap_buffer, deferred_free);
 	/* Zero the buffer pages before adding back to the pool */
-	if (reason == DF_NORMAL)
-		if (system_heap_zero_buffer(buffer))
-			reason = DF_UNDER_PRESSURE; // On failure, just free
+	system_heap_zero_buffer(buffer);
 
 	table = &buffer->sg_table;
 	for_each_sgtable_sg(table, sg, i) {
 		struct page *page = sg_page(sg);
 
-		if (reason == DF_UNDER_PRESSURE) {
-			__free_pages(page, compound_order(page));
-		} else {
-			for (j = 0; j < NUM_ORDERS; j++) {
-				if (compound_order(page) == orders[j])
-					break;
-			}
-			dmabuf_page_pool_free(pools[j], page);
+		for (j = 0; j < NUM_ORDERS; j++) {
+			if (compound_order(page) == orders[j])
+				break;
 		}
+		dmabuf_page_pool_free(pools[j], page);
 	}
 	sg_free_table(table);
 	kfree(buffer);
-}
-
-static void system_heap_dma_buf_release(struct dma_buf *dmabuf)
-{
-	struct system_heap_buffer *buffer = dmabuf->priv;
-	int npages = PAGE_ALIGN(buffer->len) / PAGE_SIZE;
-
-	deferred_free(&buffer->deferred_free, system_heap_buf_free, npages);
 }
 
 static const struct dma_buf_ops system_heap_buf_ops = {
@@ -429,8 +416,10 @@ static struct dma_buf *system_heap_do_allocate(struct dma_heap *heap,
 		 * Avoid trying to allocate memory if the process
 		 * has been killed by SIGKILL
 		 */
-		if (fatal_signal_pending(current))
+		if (fatal_signal_pending(current)) {
+			ret = -EINTR;
 			goto free_buffer;
+		}
 
 		page = alloc_largest_available(size_remaining, max_order);
 		if (!page)
@@ -543,48 +532,21 @@ static struct dma_heap_ops system_uncached_heap_ops = {
 	.allocate = system_uncached_heap_not_initialized,
 };
 
-static int set_heap_dev_dma(struct device *heap_dev)
-{
-	int err = 0;
-
-	if (!heap_dev)
-		return -EINVAL;
-
-	dma_coerce_mask_and_coherent(heap_dev, DMA_BIT_MASK(64));
-
-	if (!heap_dev->dma_parms) {
-		heap_dev->dma_parms = devm_kzalloc(heap_dev,
-						   sizeof(*heap_dev->dma_parms),
-						   GFP_KERNEL);
-		if (!heap_dev->dma_parms)
-			return -ENOMEM;
-
-		err = dma_set_max_seg_size(heap_dev, (unsigned int)DMA_BIT_MASK(64));
-		if (err) {
-			devm_kfree(heap_dev, heap_dev->dma_parms);
-			dev_err(heap_dev, "Failed to set DMA segment size, err:%d\n", err);
-			return err;
-		}
-	}
-
-	return 0;
-}
-
 static int system_heap_create(void)
 {
 	struct dma_heap_export_info exp_info;
-	int i, err = 0;
+	int i;
 
 	for (i = 0; i < NUM_ORDERS; i++) {
 		pools[i] = dmabuf_page_pool_create(order_flags[i], orders[i]);
 
-		if (!pools[i]) {
+		if (IS_ERR(pools[i])) {
 			int j;
 
 			pr_err("%s: page pool creation failed!\n", __func__);
 			for (j = 0; j < i; j++)
 				dmabuf_page_pool_destroy(pools[j]);
-			return -ENOMEM;
+			return PTR_ERR(pools[i]);
 		}
 	}
 
@@ -604,10 +566,7 @@ static int system_heap_create(void)
 	if (IS_ERR(sys_uncached_heap))
 		return PTR_ERR(sys_uncached_heap);
 
-	err = set_heap_dev_dma(dma_heap_get_dev(sys_uncached_heap));
-	if (err)
-		return err;
-
+	dma_coerce_mask_and_coherent(dma_heap_get_dev(sys_uncached_heap), DMA_BIT_MASK(64));
 	mb(); /* make sure we only set allocate after dma_mask is set */
 	system_uncached_heap_ops.allocate = system_uncached_heap_allocate;
 

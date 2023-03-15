@@ -13,7 +13,7 @@
 struct notifier_block;
 
 void add_device_randomness(const void *buf, unsigned int len);
-void add_bootloader_randomness(const void *buf, size_t len);
+void __init add_bootloader_randomness(const void *buf, size_t len);
 void add_input_randomness(unsigned int type, unsigned int code,
 			  unsigned int value) __latent_entropy;
 void add_interrupt_randomness(int irq) __latent_entropy;
@@ -29,7 +29,7 @@ static inline void add_latent_entropy(void) { }
 #endif
 
 void get_random_bytes(void *buf, int len);
-int __must_check get_random_bytes_arch(void *buf, int len);
+size_t __must_check get_random_bytes_arch(void *buf, size_t len);
 u32 get_random_u32(void);
 u64 get_random_u64(void);
 static inline unsigned int get_random_int(void)
@@ -148,7 +148,7 @@ struct random_ready_callback {
 	void (*func)(struct random_ready_callback *rdy);
 	struct module *owner;
 };
-extern int add_random_ready_callback(struct random_ready_callback *rdy);
-extern void del_random_ready_callback(struct random_ready_callback *rdy);
+int add_random_ready_callback(struct random_ready_callback *rdy);
+void del_random_ready_callback(struct random_ready_callback *rdy);
 
 #endif /* _LINUX_RANDOM_H */

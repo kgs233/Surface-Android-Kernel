@@ -1,0 +1,41 @@
+--- drivers/acpi/scan.c
++++ drivers/acpi/scan.c
+@@ -1763,8 +1769,12 @@ static void acpi_scan_dep_init(struct acpi_device *adev)
+ 	struct acpi_dep_data *dep;
+ 
+ 	list_for_each_entry(dep, &acpi_dep_list, node) {
+-		if (dep->consumer == adev->handle)
++		if (dep->consumer == adev->handle) {
++			if (dep->honor_dep)
++				adev->flags.honor_deps = 1;
++
+ 			adev->dep_unmet++;
++		}
+ 	}
+ }
+ 
+@@ -1968,7 +1978,7 @@ static u32 acpi_scan_check_dep(acpi_handle handle, bool check_dep)
+ 	for (count = 0, i = 0; i < dep_devices.count; i++) {
+ 		struct acpi_device_info *info;
+ 		struct acpi_dep_data *dep;
+-		bool skip;
++		bool skip, honor_dep;
+ 
+ 		status = acpi_get_object_info(dep_devices.handles[i], &info);
+ 		if (ACPI_FAILURE(status)) {
+@@ -1977,6 +1987,7 @@ static u32 acpi_scan_check_dep(acpi_handle handle, bool check_dep)
+ 		}
+ 
+ 		skip = acpi_info_matches_ids(info, acpi_ignore_dep_ids);
++		honor_dep = acpi_info_matches_ids(info, acpi_honor_dep_ids);
+ 		kfree(info);
+ 
+ 		if (skip)
+@@ -1990,6 +2001,7 @@ static u32 acpi_scan_check_dep(acpi_handle handle, bool check_dep)
+ 
+ 		dep->supplier = dep_devices.handles[i];
+ 		dep->consumer = handle;
++		dep->honor_dep = honor_dep;
+ 
+ 		mutex_lock(&acpi_dep_list_lock);
+ 		list_add_tail(&dep->node , &acpi_dep_list);

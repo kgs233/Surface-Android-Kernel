@@ -87,7 +87,7 @@ struct gadget_info {
 
 static inline struct gadget_info *to_gadget_info(struct config_item *item)
 {
-	 return container_of(to_config_group(item), struct gadget_info, group);
+	return container_of(to_config_group(item), struct gadget_info, group);
 }
 
 struct config_usb_cfg {
@@ -397,21 +397,21 @@ static struct configfs_attribute *gadget_root_attrs[] = {
 
 static inline struct gadget_strings *to_gadget_strings(struct config_item *item)
 {
-	 return container_of(to_config_group(item), struct gadget_strings,
+	return container_of(to_config_group(item), struct gadget_strings,
 			 group);
 }
 
 static inline struct gadget_config_name *to_gadget_config_name(
 		struct config_item *item)
 {
-	 return container_of(to_config_group(item), struct gadget_config_name,
+	return container_of(to_config_group(item), struct gadget_config_name,
 			 group);
 }
 
 static inline struct usb_function_instance *to_usb_function_instance(
 		struct config_item *item)
 {
-	 return container_of(to_config_group(item),
+	return container_of(to_config_group(item),
 			 struct usb_function_instance, group);
 }
 
@@ -461,6 +461,12 @@ static int config_usb_cfg_link(
 	 * from another gadget or a random directory.
 	 * Also a function instance can only be linked once.
 	 */
+
+	if (gi->composite.gadget_driver.udc_name) {
+		ret = -EINVAL;
+		goto out;
+	}
+
 	list_for_each_entry(a_fi, &gi->available_func, cfs_list) {
 		if (a_fi == fi)
 			break;
@@ -1540,28 +1546,18 @@ static void configfs_composite_unbind(struct usb_gadget *gadget)
 static int android_setup(struct usb_gadget *gadget,
 			const struct usb_ctrlrequest *c)
 {
-	struct usb_composite_dev *cdev;
+	struct usb_composite_dev *cdev = get_gadget_data(gadget);
 	unsigned long flags;
-	struct gadget_info *gi;
+	struct gadget_info *gi = container_of(cdev, struct gadget_info, cdev);
 	int value = -EOPNOTSUPP;
 	struct usb_function_instance *fi;
 
-	if (!android_device)
-		return 0;
-
-	gi = dev_get_drvdata(android_device);
-	spin_lock_irqsave(&gi->spinlock, flags);
-	cdev = get_gadget_data(gadget);
-	if (!cdev || gi->unbind) {
-		spin_unlock_irqrestore(&gi->spinlock, flags);
-		return 0;
-	}
-
+	spin_lock_irqsave(&cdev->lock, flags);
 	if (!gi->connected) {
 		gi->connected = 1;
 		schedule_work(&gi->work);
 	}
-
+	spin_unlock_irqrestore(&cdev->lock, flags);
 	list_for_each_entry(fi, &gi->available_func, cfs_list) {
 		if (fi != NULL && fi->f != NULL && fi->f->setup != NULL) {
 			value = fi->f->setup(fi->f, c);
@@ -1578,11 +1574,12 @@ static int android_setup(struct usb_gadget *gadget,
 	if (value < 0)
 		value = composite_setup(gadget, c);
 
+	spin_lock_irqsave(&cdev->lock, flags);
 	if (c->bRequest == USB_REQ_SET_CONFIGURATION &&
 						cdev->config) {
 		schedule_work(&gi->work);
 	}
-	spin_unlock_irqrestore(&gi->spinlock, flags);
+	spin_unlock_irqrestore(&cdev->lock, flags);
 
 	return value;
 }

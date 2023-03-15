@@ -34,7 +34,6 @@
 
 #include "usb.h"
 
-#include <trace/hooks/usb.h>
 
 /*
  * Adds a new dynamic USBdevice ID to this driver,
@@ -520,16 +519,12 @@ static int usb_unbind_interface(struct device *dev)
  * @driver: the driver to be bound
  * @iface: the interface to which it will be bound; must be in the
  *	usb device's active configuration
- * @priv: driver data associated with that interface
+ * @data: driver data associated with that interface
  *
  * This is used by usb device drivers that need to claim more than one
  * interface on a device when probing (audio and acm are current examples).
  * No device driver should directly modify internal usb_interface or
  * usb_device structure members.
- *
- * Few drivers should need to use this routine, since the most natural
- * way to bind to an interface is to return the private data from
- * the driver's probe() method.
  *
  * Callers must own the device lock, so driver probe() entries don't need
  * extra locking, but other call contexts may need to explicitly claim that
@@ -538,7 +533,7 @@ static int usb_unbind_interface(struct device *dev)
  * Return: 0 on success.
  */
 int usb_driver_claim_interface(struct usb_driver *driver,
-				struct usb_interface *iface, void *priv)
+				struct usb_interface *iface, void *data)
 {
 	struct device *dev;
 	int retval = 0;
@@ -555,7 +550,7 @@ int usb_driver_claim_interface(struct usb_driver *driver,
 		return -ENODEV;
 
 	dev->driver = &driver->drvwrap.driver;
-	usb_set_intfdata(iface, priv);
+	usb_set_intfdata(iface, data);
 	iface->needs_binding = 0;
 
 	iface->condition = USB_INTERFACE_BOUND;
@@ -1404,14 +1399,9 @@ static int usb_suspend_both(struct usb_device *udev, pm_message_t msg)
 	int			status = 0;
 	int			i = 0, n = 0;
 	struct usb_interface	*intf;
-	int			bypass = 0;
 
 	if (udev->state == USB_STATE_NOTATTACHED ||
 			udev->state == USB_STATE_SUSPENDED)
-		goto done;
-
-	trace_android_vh_usb_dev_suspend(udev, msg, &bypass);
-	if (bypass)
 		goto done;
 
 	/* Suspend all the interfaces and then udev itself */
@@ -1510,17 +1500,11 @@ static int usb_resume_both(struct usb_device *udev, pm_message_t msg)
 	int			status = 0;
 	int			i;
 	struct usb_interface	*intf;
-	int			bypass = 0;
 
 	if (udev->state == USB_STATE_NOTATTACHED) {
 		status = -ENODEV;
 		goto done;
 	}
-
-	trace_android_vh_usb_dev_resume(udev, msg, &bypass);
-	if (bypass)
-		goto done;
-
 	udev->can_submit = 1;
 
 	/* Resume the device */

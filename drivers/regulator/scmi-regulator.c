@@ -2,7 +2,7 @@
 //
 // System Control and Management Interface (SCMI) based regulator driver
 //
-// Copyright (C) 2020 ARM Ltd.
+// Copyright (C) 2020-2021 ARM Ltd.
 //
 // Implements a regulator driver on top of the SCMI Voltage Protocol.
 //
@@ -305,7 +305,7 @@ static int scmi_regulator_probe(struct scmi_device *sdev)
 	if (!handle)
 		return -ENODEV;
 
-	voltage_ops = handle->devm_get_protocol(sdev,
+	voltage_ops = handle->devm_protocol_get(sdev,
 						SCMI_PROTOCOL_VOLTAGE, &ph);
 	if (IS_ERR(voltage_ops))
 		return PTR_ERR(voltage_ops);
@@ -347,8 +347,10 @@ static int scmi_regulator_probe(struct scmi_device *sdev)
 	for_each_child_of_node(np, child) {
 		ret = process_scmi_regulator_of_node(sdev, ph, child, rinfo);
 		/* abort on any mem issue */
-		if (ret == -ENOMEM)
+		if (ret == -ENOMEM) {
+			of_node_put(child);
 			return ret;
+		}
 	}
 	of_node_put(np);
 	/*

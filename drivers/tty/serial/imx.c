@@ -30,7 +30,6 @@
 #include <linux/dma-mapping.h>
 
 #include <asm/irq.h>
-#include <linux/platform_data/serial-imx.h>
 #include <linux/platform_data/dma-imx.h>
 
 #include "serial_mctrl_gpio.h"
@@ -226,6 +225,8 @@ struct imx_port {
 	struct scatterlist	rx_sgl, tx_sgl[2];
 	void			*rx_buf;
 	struct circ_buf		rx_ring;
+	unsigned int		rx_buf_size;
+	unsigned int		rx_period_length;
 	unsigned int		rx_periods;
 	dma_cookie_t		rx_cookie;
 	unsigned int		tx_bytes;
@@ -262,25 +263,6 @@ static struct imx_uart_data imx_uart_devdata[] = {
 		.devtype = IMX6Q_UART,
 	},
 };
-
-static const struct platform_device_id imx_uart_devtype[] = {
-	{
-		.name = "imx1-uart",
-		.driver_data = (kernel_ulong_t) &imx_uart_devdata[IMX1_UART],
-	}, {
-		.name = "imx21-uart",
-		.driver_data = (kernel_ulong_t) &imx_uart_devdata[IMX21_UART],
-	}, {
-		.name = "imx53-uart",
-		.driver_data = (kernel_ulong_t) &imx_uart_devdata[IMX53_UART],
-	}, {
-		.name = "imx6q-uart",
-		.driver_data = (kernel_ulong_t) &imx_uart_devdata[IMX6Q_UART],
-	}, {
-		/* sentinel */
-	}
-};
-MODULE_DEVICE_TABLE(platform, imx_uart_devtype);
 
 static const struct of_device_id imx_uart_dt_ids[] = {
 	{ .compatible = "fsl,imx6q-uart", .data = &imx_uart_devdata[IMX6Q_UART], },
@@ -412,11 +394,7 @@ static void imx_uart_rts_inactive(struct imx_port *sport, u32 *ucr2)
 
 static void start_hrtimer_ms(struct hrtimer *hrt, unsigned long msec)
 {
-       long sec = msec / MSEC_PER_SEC;
-       long nsec = (msec % MSEC_PER_SEC) * 1000000;
-       ktime_t t = ktime_set(sec, nsec);
-
-       hrtimer_start(hrt, t, HRTIMER_MODE_REL);
+       hrtimer_start(hrt, ms_to_ktime(msec), HRTIMER_MODE_REL);
 }
 
 /* called with port.lock taken and irqs off */
@@ -943,14 +921,8 @@ static irqreturn_t imx_uart_int(int irq, void *dev_id)
 	struct imx_port *sport = dev_id;
 	unsigned int usr1, usr2, ucr1, ucr2, ucr3, ucr4;
 	irqreturn_t ret = IRQ_NONE;
-	unsigned long flags = 0;
 
-	/*
-	 * IRQs might not be disabled upon entering this interrupt handler,
-	 * e.g. when interrupt handlers are forced to be threaded. To support
-	 * this scenario as well, disable IRQs when acquiring the spinlock.
-	 */
-	spin_lock_irqsave(&sport->port.lock, flags);
+	spin_lock(&sport->port.lock);
 
 	usr1 = imx_uart_readl(sport, USR1);
 	usr2 = imx_uart_readl(sport, USR2);
@@ -1020,7 +992,7 @@ static irqreturn_t imx_uart_int(int irq, void *dev_id)
 		ret = IRQ_HANDLED;
 	}
 
-	spin_unlock_irqrestore(&sport->port.lock, flags);
+	spin_unlock(&sport->port.lock);
 
 	return ret;
 }
@@ -1214,10 +1186,6 @@ static void imx_uart_dma_rx_callback(void *data)
 	}
 }
 
-/* RX DMA buffer periods */
-#define RX_DMA_PERIODS	16
-#define RX_BUF_SIZE	(RX_DMA_PERIODS * PAGE_SIZE / 4)
-
 static int imx_uart_start_rx_dma(struct imx_port *sport)
 {
 	struct scatterlist *sgl = &sport->rx_sgl;
@@ -1228,9 +1196,8 @@ static int imx_uart_start_rx_dma(struct imx_port *sport)
 
 	sport->rx_ring.head = 0;
 	sport->rx_ring.tail = 0;
-	sport->rx_periods = RX_DMA_PERIODS;
 
-	sg_init_one(sgl, sport->rx_buf, RX_BUF_SIZE);
+	sg_init_one(sgl, sport->rx_buf, sport->rx_buf_size);
 	ret = dma_map_sg(dev, sgl, 1, DMA_FROM_DEVICE);
 	if (ret == 0) {
 		dev_err(dev, "DMA mapping error for RX.\n");
@@ -1347,7 +1314,8 @@ static int imx_uart_dma_init(struct imx_port *sport)
 		goto err;
 	}
 
-	sport->rx_buf = kzalloc(RX_BUF_SIZE, GFP_KERNEL);
+	sport->rx_buf_size = sport->rx_period_length * sport->rx_periods;
+	sport->rx_buf = kzalloc(sport->rx_buf_size, GFP_KERNEL);
 	if (!sport->rx_buf) {
 		ret = -ENOMEM;
 		goto err;
@@ -1882,7 +1850,7 @@ static int imx_uart_poll_init(struct uart_port *port)
 	ucr1 |= UCR1_UARTEN;
 	ucr1 &= ~(UCR1_TRDYEN | UCR1_RTSDEN | UCR1_RRDYEN);
 
-	ucr2 |= UCR2_RXEN;
+	ucr2 |= UCR2_RXEN | UCR2_TXEN;
 	ucr2 &= ~UCR2_ATEN;
 
 	imx_uart_writel(sport, ucr1, UCR1);
@@ -2006,8 +1974,8 @@ imx_uart_console_write(struct console *co, const char *s, unsigned int count)
 {
 	struct imx_port *sport = imx_uart_ports[co->index];
 	struct imx_port_ucrs old_ucr;
+	unsigned long flags;
 	unsigned int ucr1;
-	unsigned long flags = 0;
 	int locked = 1;
 
 	if (sport->port.sysrq)
@@ -2184,70 +2152,6 @@ static struct uart_driver imx_uart_uart_driver = {
 	.cons           = IMX_CONSOLE,
 };
 
-#ifdef CONFIG_OF
-/*
- * This function returns 1 iff pdev isn't a device instatiated by dt, 0 iff it
- * could successfully get all information from dt or a negative errno.
- */
-static int imx_uart_probe_dt(struct imx_port *sport,
-			     struct platform_device *pdev)
-{
-	struct device_node *np = pdev->dev.of_node;
-	int ret;
-
-	sport->devdata = of_device_get_match_data(&pdev->dev);
-	if (!sport->devdata)
-		/* no device tree device */
-		return 1;
-
-	ret = of_alias_get_id(np, "serial");
-	if (ret < 0) {
-		dev_err(&pdev->dev, "failed to get alias id, errno %d\n", ret);
-		return ret;
-	}
-	sport->port.line = ret;
-
-	if (of_get_property(np, "uart-has-rtscts", NULL) ||
-	    of_get_property(np, "fsl,uart-has-rtscts", NULL) /* deprecated */)
-		sport->have_rtscts = 1;
-
-	if (of_get_property(np, "fsl,dte-mode", NULL))
-		sport->dte_mode = 1;
-
-	if (of_get_property(np, "rts-gpios", NULL))
-		sport->have_rtsgpio = 1;
-
-	if (of_get_property(np, "fsl,inverted-tx", NULL))
-		sport->inverted_tx = 1;
-
-	if (of_get_property(np, "fsl,inverted-rx", NULL))
-		sport->inverted_rx = 1;
-
-	return 0;
-}
-#else
-static inline int imx_uart_probe_dt(struct imx_port *sport,
-				    struct platform_device *pdev)
-{
-	return 1;
-}
-#endif
-
-static void imx_uart_probe_pdata(struct imx_port *sport,
-				 struct platform_device *pdev)
-{
-	struct imxuart_platform_data *pdata = dev_get_platdata(&pdev->dev);
-
-	sport->port.line = pdev->id;
-	sport->devdata = (struct imx_uart_data	*) pdev->id_entry->driver_data;
-
-	if (!pdata)
-		return;
-
-	if (pdata->flags & IMXUART_HAVE_RTSCTS)
-		sport->have_rtscts = 1;
-}
-
 static enum hrtimer_restart imx_trigger_start_tx(struct hrtimer *t)
 {
 	struct imx_port *sport = container_of(t, struct imx_port, trigger_start_tx);
@@ -2274,10 +2178,16 @@ static enum hrtimer_restart imx_trigger_stop_tx(struct hrtimer *t)
 	return HRTIMER_NORESTART;
 }
 
+/* Default RX DMA buffer configuration */
+#define RX_DMA_PERIODS		16
+#define RX_DMA_PERIOD_LEN	(PAGE_SIZE / 4)
+
 static int imx_uart_probe(struct platform_device *pdev)
 {
+	struct device_node *np = pdev->dev.of_node;
 	struct imx_port *sport;
 	void __iomem *base;
+	u32 dma_buf_conf[2];
 	int ret = 0;
 	u32 ucr1;
 	struct resource *res;
@@ -2287,11 +2197,38 @@ static int imx_uart_probe(struct platform_device *pdev)
 	if (!sport)
 		return -ENOMEM;
 
-	ret = imx_uart_probe_dt(sport, pdev);
-	if (ret > 0)
-		imx_uart_probe_pdata(sport, pdev);
-	else if (ret < 0)
+	sport->devdata = of_device_get_match_data(&pdev->dev);
+
+	ret = of_alias_get_id(np, "serial");
+	if (ret < 0) {
+		dev_err(&pdev->dev, "failed to get alias id, errno %d\n", ret);
 		return ret;
+	}
+	sport->port.line = ret;
+
+	if (of_get_property(np, "uart-has-rtscts", NULL) ||
+	    of_get_property(np, "fsl,uart-has-rtscts", NULL) /* deprecated */)
+		sport->have_rtscts = 1;
+
+	if (of_get_property(np, "fsl,dte-mode", NULL))
+		sport->dte_mode = 1;
+
+	if (of_get_property(np, "rts-gpios", NULL))
+		sport->have_rtsgpio = 1;
+
+	if (of_get_property(np, "fsl,inverted-tx", NULL))
+		sport->inverted_tx = 1;
+
+	if (of_get_property(np, "fsl,inverted-rx", NULL))
+		sport->inverted_rx = 1;
+
+	if (!of_property_read_u32_array(np, "fsl,dma-info", dma_buf_conf, 2)) {
+		sport->rx_period_length = dma_buf_conf[0];
+		sport->rx_periods = dma_buf_conf[1];
+	} else {
+		sport->rx_period_length = RX_DMA_PERIOD_LEN;
+		sport->rx_periods = RX_DMA_PERIODS;
+	}
 
 	if (sport->port.line >= ARRAY_SIZE(imx_uart_ports)) {
 		dev_err(&pdev->dev, "serial%d out of range\n",
@@ -2313,7 +2250,7 @@ static int imx_uart_probe(struct platform_device *pdev)
 	sport->port.dev = &pdev->dev;
 	sport->port.mapbase = res->start;
 	sport->port.membase = base;
-	sport->port.type = PORT_IMX,
+	sport->port.type = PORT_IMX;
 	sport->port.iotype = UPIO_MEM;
 	sport->port.irq = rxirq;
 	sport->port.fifosize = 32;
@@ -2626,7 +2563,6 @@ static const struct dev_pm_ops imx_uart_pm_ops = {
 	.suspend_noirq = imx_uart_suspend_noirq,
 	.resume_noirq = imx_uart_resume_noirq,
 	.freeze_noirq = imx_uart_suspend_noirq,
-	.thaw_noirq = imx_uart_resume_noirq,
 	.restore_noirq = imx_uart_resume_noirq,
 	.suspend = imx_uart_suspend,
 	.resume = imx_uart_resume,
@@ -2639,7 +2575,6 @@ static struct platform_driver imx_uart_platform_driver = {
 	.probe = imx_uart_probe,
 	.remove = imx_uart_remove,
 
-	.id_table = imx_uart_devtype,
 	.driver = {
 		.name = "imx-uart",
 		.of_match_table = imx_uart_dt_ids,

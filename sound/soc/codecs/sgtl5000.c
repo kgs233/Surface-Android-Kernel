@@ -1187,7 +1187,7 @@ static struct snd_soc_dai_driver sgtl5000_dai = {
 		.formats = SGTL5000_FORMATS,
 	},
 	.ops = &sgtl5000_ops,
-	.symmetric_rates = 1,
+	.symmetric_rate = 1,
 };
 
 static bool sgtl5000_volatile(struct device *dev, unsigned int reg)
@@ -1797,7 +1797,6 @@ static int sgtl5000_i2c_remove(struct i2c_client *client)
 {
 	struct sgtl5000_priv *sgtl5000 = i2c_get_clientdata(client);
 
-	regmap_write(sgtl5000->regmap, SGTL5000_CHIP_CLK_CTRL, SGTL5000_CHIP_CLK_CTRL_DEFAULT);
 	regmap_write(sgtl5000->regmap, SGTL5000_CHIP_DIG_POWER, SGTL5000_DIG_POWER_DEFAULT);
 	regmap_write(sgtl5000->regmap, SGTL5000_CHIP_ANA_POWER, SGTL5000_ANA_POWER_DEFAULT);
 
@@ -1828,9 +1827,9 @@ MODULE_DEVICE_TABLE(of, sgtl5000_dt_ids);
 
 static struct i2c_driver sgtl5000_i2c_driver = {
 	.driver = {
-		   .name = "sgtl5000",
-		   .of_match_table = sgtl5000_dt_ids,
-		   },
+		.name = "sgtl5000",
+		.of_match_table = sgtl5000_dt_ids,
+	},
 	.probe = sgtl5000_i2c_probe,
 	.remove = sgtl5000_i2c_remove,
 	.shutdown = sgtl5000_i2c_shutdown,

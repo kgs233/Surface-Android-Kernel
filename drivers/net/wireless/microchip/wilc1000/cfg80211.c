@@ -539,8 +539,9 @@ static int wilc_wfi_cfg_copy_wpa_info(struct wilc_wfi_key *key_info,
 	return 0;
 }
 
-static int add_key(struct wiphy *wiphy, struct net_device *netdev, u8 key_index,
-		   bool pairwise, const u8 *mac_addr, struct key_params *params)
+static int add_key(struct wiphy *wiphy, struct net_device *netdev, int link_id,
+		   u8 key_index, bool pairwise, const u8 *mac_addr,
+		   struct key_params *params)
 
 {
 	int ret = 0, keylen = params->key_len;
@@ -649,7 +650,7 @@ static int add_key(struct wiphy *wiphy, struct net_device *netdev, u8 key_index,
 	return ret;
 }
 
-static int del_key(struct wiphy *wiphy, struct net_device *netdev,
+static int del_key(struct wiphy *wiphy, struct net_device *netdev, int link_id,
 		   u8 key_index,
 		   bool pairwise,
 		   const u8 *mac_addr)
@@ -686,8 +687,9 @@ static int del_key(struct wiphy *wiphy, struct net_device *netdev,
 	return 0;
 }
 
-static int get_key(struct wiphy *wiphy, struct net_device *netdev, u8 key_index,
-		   bool pairwise, const u8 *mac_addr, void *cookie,
+static int get_key(struct wiphy *wiphy, struct net_device *netdev, int link_id,
+		   u8 key_index, bool pairwise, const u8 *mac_addr,
+		   void *cookie,
 		   void (*callback)(void *cookie, struct key_params *))
 {
 	struct wilc_vif *vif = netdev_priv(netdev);
@@ -714,7 +716,8 @@ static int get_key(struct wiphy *wiphy, struct net_device *netdev, u8 key_index,
 }
 
 static int set_default_key(struct wiphy *wiphy, struct net_device *netdev,
-			   u8 key_index, bool unicast, bool multicast)
+			   int link_id, u8 key_index, bool unicast,
+			   bool multicast)
 {
 	struct wilc_vif *vif = netdev_priv(netdev);
 
@@ -947,8 +950,7 @@ static inline void wilc_wfi_cfg_parse_ch_attr(u8 *buf, u32 len, u8 sta_ch)
 		if (index + sizeof(*e) + attr_size > len)
 			return;
 
-		if (e->attr_type == IEEE80211_P2P_ATTR_CHANNEL_LIST &&
-		    attr_size >= (sizeof(struct wilc_attr_ch_list) - sizeof(*e)))
+		if (e->attr_type == IEEE80211_P2P_ATTR_CHANNEL_LIST)
 			ch_list_idx = index;
 		else if (e->attr_type == IEEE80211_P2P_ATTR_OPER_CHANNEL &&
 			 attr_size == (sizeof(struct wilc_attr_oper_ch) - sizeof(*e)))
@@ -1396,7 +1398,8 @@ static int change_beacon(struct wiphy *wiphy, struct net_device *dev,
 	return wilc_add_beacon(vif, 0, 0, beacon);
 }
 
-static int stop_ap(struct wiphy *wiphy, struct net_device *dev)
+static int stop_ap(struct wiphy *wiphy, struct net_device *dev,
+		   unsigned int link_id)
 {
 	int ret;
 	struct wilc_vif *vif = netdev_priv(dev);
@@ -1559,7 +1562,7 @@ static int del_virtual_intf(struct wiphy *wiphy, struct wireless_dev *wdev)
 		wilc_wfi_deinit_mon_interface(wl, true);
 	vif = netdev_priv(wdev->netdev);
 	cfg80211_stop_iface(wiphy, wdev, GFP_KERNEL);
-	unregister_netdevice(vif->ndev);
+	cfg80211_unregister_netdevice(vif->ndev);
 	vif->monitor_flag = 0;
 
 	wilc_set_operation_mode(vif, 0, 0, 0);
@@ -1730,7 +1733,7 @@ int wilc_cfg80211_init(struct wilc **wilc, struct device *dev, int io_type,
 {
 	struct wilc *wl;
 	struct wilc_vif *vif;
-	int ret;
+	int ret, i;
 
 	wl = wilc_create_wiphy(dev);
 	if (!wl)
@@ -1746,7 +1749,10 @@ int wilc_cfg80211_init(struct wilc **wilc, struct device *dev, int io_type,
 	wl->io_type = io_type;
 	wl->hif_func = ops;
 	wl->chip_ps_state = WILC_CHIP_WAKEDUP;
-	INIT_LIST_HEAD(&wl->txq_head.list);
+
+	for (i = 0; i < NQUEUES; i++)
+		INIT_LIST_HEAD(&wl->txq[i].txq_head.list);
+
 	INIT_LIST_HEAD(&wl->rxq_head.list);
 	INIT_LIST_HEAD(&wl->vif_list);
 

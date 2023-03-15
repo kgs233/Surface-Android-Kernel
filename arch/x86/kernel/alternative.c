@@ -28,6 +28,7 @@
 #include <asm/insn.h>
 #include <asm/io.h>
 #include <asm/fixmap.h>
+#include <asm/paravirt.h>
 #include <asm/asm-prototypes.h>
 
 int __read_mostly alternatives_patched;
@@ -75,186 +76,30 @@ do {									\
 	}								\
 } while (0)
 
-/*
- * Each GENERIC_NOPX is of X bytes, and defined as an array of bytes
- * that correspond to that nop. Getting from one nop to the next, we
- * add to the array the offset that is equal to the sum of all sizes of
- * nops preceding the one we are after.
- *
- * Note: The GENERIC_NOP5_ATOMIC is at the end, as it breaks the
- * nice symmetry of sizes of the previous nops.
- */
-#if defined(GENERIC_NOP1) && !defined(CONFIG_X86_64)
-static const unsigned char intelnops[] =
+static const unsigned char x86nops[] =
 {
-	GENERIC_NOP1,
-	GENERIC_NOP2,
-	GENERIC_NOP3,
-	GENERIC_NOP4,
-	GENERIC_NOP5,
-	GENERIC_NOP6,
-	GENERIC_NOP7,
-	GENERIC_NOP8,
-	GENERIC_NOP5_ATOMIC
+	BYTES_NOP1,
+	BYTES_NOP2,
+	BYTES_NOP3,
+	BYTES_NOP4,
+	BYTES_NOP5,
+	BYTES_NOP6,
+	BYTES_NOP7,
+	BYTES_NOP8,
 };
-static const unsigned char * const intel_nops[ASM_NOP_MAX+2] =
+
+const unsigned char * const x86_nops[ASM_NOP_MAX+1] =
 {
 	NULL,
-	intelnops,
-	intelnops + 1,
-	intelnops + 1 + 2,
-	intelnops + 1 + 2 + 3,
-	intelnops + 1 + 2 + 3 + 4,
-	intelnops + 1 + 2 + 3 + 4 + 5,
-	intelnops + 1 + 2 + 3 + 4 + 5 + 6,
-	intelnops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
-	intelnops + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8,
+	x86nops,
+	x86nops + 1,
+	x86nops + 1 + 2,
+	x86nops + 1 + 2 + 3,
+	x86nops + 1 + 2 + 3 + 4,
+	x86nops + 1 + 2 + 3 + 4 + 5,
+	x86nops + 1 + 2 + 3 + 4 + 5 + 6,
+	x86nops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
 };
-#endif
-
-#ifdef K8_NOP1
-static const unsigned char k8nops[] =
-{
-	K8_NOP1,
-	K8_NOP2,
-	K8_NOP3,
-	K8_NOP4,
-	K8_NOP5,
-	K8_NOP6,
-	K8_NOP7,
-	K8_NOP8,
-	K8_NOP5_ATOMIC
-};
-static const unsigned char * const k8_nops[ASM_NOP_MAX+2] =
-{
-	NULL,
-	k8nops,
-	k8nops + 1,
-	k8nops + 1 + 2,
-	k8nops + 1 + 2 + 3,
-	k8nops + 1 + 2 + 3 + 4,
-	k8nops + 1 + 2 + 3 + 4 + 5,
-	k8nops + 1 + 2 + 3 + 4 + 5 + 6,
-	k8nops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
-	k8nops + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8,
-};
-#endif
-
-#if defined(K7_NOP1) && !defined(CONFIG_X86_64)
-static const unsigned char k7nops[] =
-{
-	K7_NOP1,
-	K7_NOP2,
-	K7_NOP3,
-	K7_NOP4,
-	K7_NOP5,
-	K7_NOP6,
-	K7_NOP7,
-	K7_NOP8,
-	K7_NOP5_ATOMIC
-};
-static const unsigned char * const k7_nops[ASM_NOP_MAX+2] =
-{
-	NULL,
-	k7nops,
-	k7nops + 1,
-	k7nops + 1 + 2,
-	k7nops + 1 + 2 + 3,
-	k7nops + 1 + 2 + 3 + 4,
-	k7nops + 1 + 2 + 3 + 4 + 5,
-	k7nops + 1 + 2 + 3 + 4 + 5 + 6,
-	k7nops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
-	k7nops + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8,
-};
-#endif
-
-#ifdef P6_NOP1
-static const unsigned char p6nops[] =
-{
-	P6_NOP1,
-	P6_NOP2,
-	P6_NOP3,
-	P6_NOP4,
-	P6_NOP5,
-	P6_NOP6,
-	P6_NOP7,
-	P6_NOP8,
-	P6_NOP5_ATOMIC
-};
-static const unsigned char * const p6_nops[ASM_NOP_MAX+2] =
-{
-	NULL,
-	p6nops,
-	p6nops + 1,
-	p6nops + 1 + 2,
-	p6nops + 1 + 2 + 3,
-	p6nops + 1 + 2 + 3 + 4,
-	p6nops + 1 + 2 + 3 + 4 + 5,
-	p6nops + 1 + 2 + 3 + 4 + 5 + 6,
-	p6nops + 1 + 2 + 3 + 4 + 5 + 6 + 7,
-	p6nops + 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8,
-};
-#endif
-
-/* Initialize these to a safe default */
-#ifdef CONFIG_X86_64
-const unsigned char * const *ideal_nops = p6_nops;
-#else
-const unsigned char * const *ideal_nops = intel_nops;
-#endif
-
-void __init arch_init_ideal_nops(void)
-{
-	switch (boot_cpu_data.x86_vendor) {
-	case X86_VENDOR_INTEL:
-		/*
-		 * Due to a decoder implementation quirk, some
-		 * specific Intel CPUs actually perform better with
-		 * the "k8_nops" than with the SDM-recommended NOPs.
-		 */
-		if (boot_cpu_data.x86 == 6 &&
-		    boot_cpu_data.x86_model >= 0x0f &&
-		    boot_cpu_data.x86_model != 0x1c &&
-		    boot_cpu_data.x86_model != 0x26 &&
-		    boot_cpu_data.x86_model != 0x27 &&
-		    boot_cpu_data.x86_model < 0x30) {
-			ideal_nops = k8_nops;
-		} else if (boot_cpu_has(X86_FEATURE_NOPL)) {
-			   ideal_nops = p6_nops;
-		} else {
-#ifdef CONFIG_X86_64
-			ideal_nops = k8_nops;
-#else
-			ideal_nops = intel_nops;
-#endif
-		}
-		break;
-
-	case X86_VENDOR_HYGON:
-		ideal_nops = p6_nops;
-		return;
-
-	case X86_VENDOR_AMD:
-		if (boot_cpu_data.x86 > 0xf) {
-			ideal_nops = p6_nops;
-			return;
-		}
-
-		fallthrough;
-
-	default:
-#ifdef CONFIG_X86_64
-		ideal_nops = k8_nops;
-#else
-		if (boot_cpu_has(X86_FEATURE_K8))
-			ideal_nops = k8_nops;
-		else if (boot_cpu_has(X86_FEATURE_K7))
-			ideal_nops = k7_nops;
-		else
-			ideal_nops = intel_nops;
-#endif
-	}
-}
 
 /* Use this to add nops to a buffer, then text_poke the whole buffer. */
 static void __init_or_module add_nops(void *insns, unsigned int len)
@@ -263,7 +108,7 @@ static void __init_or_module add_nops(void *insns, unsigned int len)
 		unsigned int noplen = len;
 		if (noplen > ASM_NOP_MAX)
 			noplen = ASM_NOP_MAX;
-		memcpy(insns, ideal_nops[noplen], noplen);
+		memcpy(insns, x86_nops[noplen], noplen);
 		insns += noplen;
 		len -= noplen;
 	}
@@ -459,8 +304,8 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
 			instr, instr, a->instrlen,
 			replacement, a->replacementlen);
 
-		DUMP_BYTES(instr, a->instrlen, "%px: old_insn: ", instr);
-		DUMP_BYTES(replacement, a->replacementlen, "%px: rpl_insn: ", replacement);
+		DUMP_BYTES(instr, a->instrlen, "%px:   old_insn: ", instr);
+		DUMP_BYTES(replacement, a->replacementlen, "%px:   rpl_insn: ", replacement);
 
 		memcpy(insn_buff, replacement, a->replacementlen);
 		insn_buff_sz = a->replacementlen;
@@ -608,7 +453,7 @@ static int patch_retpoline(void *addr, struct insn *insn, u8 *bytes)
 	i += ret;
 
 	for (; i < insn->length;)
-		bytes[i++] = 0x90;
+		bytes[i++] = BYTES_NOP1;
 
 	return i;
 }
@@ -903,7 +748,7 @@ void __init_or_module apply_paravirt(struct paravirt_patch_site *start,
 		BUG_ON(p->len > MAX_PATCH_LEN);
 		/* prep the buffer with the original instructions */
 		memcpy(insn_buff, p->instr, p->len);
-		used = pv_ops.init.patch(p->type, insn_buff, (unsigned long)p->instr, p->len);
+		used = paravirt_patch(p->type, insn_buff, (unsigned long)p->instr, p->len);
 
 		BUG_ON(used > p->len);
 
@@ -926,10 +771,23 @@ extern struct paravirt_patch_site __start_parainstructions[],
  *
  * See entry_{32,64}.S for more details.
  */
-static void __init __no_sanitize_address notrace int3_magic(unsigned int *ptr)
-{
-	*ptr = 1;
-}
+
+/*
+ * We define the int3_magic() function in assembly to control the calling
+ * convention such that we can 'call' it from assembly.
+ */
+
+extern void int3_magic(unsigned int *ptr); /* defined in asm */
+
+asm (
+"	.pushsection	.init.text, \"ax\", @progbits\n"
+"	.type		int3_magic, @function\n"
+"int3_magic:\n"
+"	movl	$1, (%" _ASM_ARG1 ")\n"
+	ASM_RET
+"	.size		int3_magic, .-int3_magic\n"
+"	.popsection\n"
+);
 
 extern __initdata unsigned long int3_selftest_ip; /* defined in asm below */
 
@@ -1009,12 +867,39 @@ void __init alternative_instructions(void)
 	 */
 
 	/*
+	 * Paravirt patching and alternative patching can be combined to
+	 * replace a function call with a short direct code sequence (e.g.
+	 * by setting a constant return value instead of doing that in an
+	 * external function).
+	 * In order to make this work the following sequence is required:
+	 * 1. set (artificial) features depending on used paravirt
+	 *    functions which can later influence alternative patching
+	 * 2. apply paravirt patching (generally replacing an indirect
+	 *    function call with a direct one)
+	 * 3. apply alternative patching (e.g. replacing a direct function
+	 *    call with a custom code sequence)
+	 * Doing paravirt patching after alternative patching would clobber
+	 * the optimization of the custom code with a function call again.
+	 */
+	paravirt_set_cap();
+
+	/*
+	 * First patch paravirt functions, such that we overwrite the indirect
+	 * call with the direct call.
+	 */
+	apply_paravirt(__parainstructions, __parainstructions_end);
+
+	/*
 	 * Rewrite the retpolines, must be done before alternatives since
 	 * those can rewrite the retpoline thunks.
 	 */
 	apply_retpolines(__retpoline_sites, __retpoline_sites_end);
 	apply_returns(__return_sites, __return_sites_end);
 
+	/*
+	 * Then patch alternatives, such that those paravirt calls that are in
+	 * alternatives can be overwritten by their immediate fragments.
+	 */
 	apply_alternatives(__alt_instructions, __alt_instructions_end);
 
 #ifdef CONFIG_SMP
@@ -1032,8 +917,6 @@ void __init alternative_instructions(void)
 				(unsigned long)__smp_locks_end);
 	}
 #endif
-
-	apply_paravirt(__parainstructions, __parainstructions_end);
 
 	restart_nmi();
 	alternatives_patched = 1;
@@ -1105,7 +988,7 @@ static inline temp_mm_state_t use_temporary_mm(struct mm_struct *mm)
 	 * with a stale address space WITHOUT being in lazy mode after
 	 * restoring the previous mm.
 	 */
-	if (this_cpu_read(cpu_tlbstate.is_lazy))
+	if (this_cpu_read(cpu_tlbstate_shared.is_lazy))
 		leave_mm(smp_processor_id());
 
 	temp_state.mm = this_cpu_read(cpu_tlbstate.loaded_mm);
@@ -1614,13 +1497,13 @@ static void text_poke_loc_init(struct text_poke_loc *tp, void *addr,
 	default: /* assume NOP */
 		switch (len) {
 		case 2: /* NOP2 -- emulate as JMP8+0 */
-			BUG_ON(memcmp(emulate, ideal_nops[len], len));
+			BUG_ON(memcmp(emulate, x86_nops[len], len));
 			tp->opcode = JMP8_INSN_OPCODE;
 			tp->disp = 0;
 			break;
 
 		case 5: /* NOP5 -- emulate as JMP32+0 */
-			BUG_ON(memcmp(emulate, ideal_nops[NOP_ATOMIC5], len));
+			BUG_ON(memcmp(emulate, x86_nops[len], len));
 			tp->opcode = JMP32_INSN_OPCODE;
 			tp->disp = 0;
 			break;
@@ -1686,7 +1569,7 @@ void __ref text_poke_queue(void *addr, const void *opcode, size_t len, const voi
  * @addr:	address to patch
  * @opcode:	opcode of new instruction
  * @len:	length to copy
- * @handler:	address to jump to when the temporary breakpoint is hit
+ * @emulate:	instruction to be emulated
  *
  * Update a single instruction with the vector in the stack, avoiding
  * dynamically allocated memory. This function should be used when it is

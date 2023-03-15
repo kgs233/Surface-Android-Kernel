@@ -34,7 +34,7 @@
 #include <linux/syscalls.h> /* killme */
 
 #define P9_PORT 564
-#define MAX_SOCK_BUF (64*1024)
+#define MAX_SOCK_BUF (1024*1024)
 #define MAXPOLLWADDR	2
 
 static struct p9_trans_module p9_tcp_trans;
@@ -45,7 +45,7 @@ static struct p9_trans_module p9_fd_trans;
  * @rfd: file descriptor for reading (trans=fd)
  * @wfd: file descriptor for writing (trans=fd)
  * @port: port to connect to (trans=tcp)
- *
+ * @privport: port is privileged
  */
 
 struct p9_fd_opts {
@@ -95,6 +95,8 @@ struct p9_poll_wait {
  * @err: error state
  * @req_list: accounting for requests which have been sent
  * @unsent_req_list: accounting for requests that haven't been sent
+ * @rreq: read request
+ * @wreq: write request
  * @req: current request being processed (if any)
  * @tmp_buf: temporary buffer to read in header
  * @rc: temporary fcall for reading current frame
@@ -118,7 +120,7 @@ struct p9_conn {
 	struct list_head unsent_req_list;
 	struct p9_req_t *rreq;
 	struct p9_req_t *wreq;
-	char tmp_buf[P9_HDRSZ];
+	char tmp_buf[7];
 	struct p9_fcall rc;
 	int wpos;
 	int wsize;
@@ -207,8 +209,6 @@ static void p9_conn_cancel(struct p9_conn *m, int err)
 		req->status = REQ_STATUS_ERROR;
 	}
 
-	spin_unlock(&m->client->lock);
-
 	list_for_each_entry_safe(req, rtmp, &cancel_list, req_list) {
 		p9_debug(P9_DEBUG_ERROR, "call back req %p\n", req);
 		list_del(&req->req_list);
@@ -216,6 +216,7 @@ static void p9_conn_cancel(struct p9_conn *m, int err)
 			req->t_err = err;
 		p9_client_cb(m->client, req, REQ_STATUS_ERROR);
 	}
+	spin_unlock(&m->client->lock);
 }
 
 static __poll_t
@@ -291,7 +292,7 @@ static void p9_read_work(struct work_struct *work)
 	if (!m->rc.sdata) {
 		m->rc.sdata = m->tmp_buf;
 		m->rc.offset = 0;
-		m->rc.capacity = P9_HDRSZ; /* start by reading header */
+		m->rc.capacity = 7; /* start by reading header */
 	}
 
 	clear_bit(Rpending, &m->wsched);
@@ -314,7 +315,7 @@ static void p9_read_work(struct work_struct *work)
 		p9_debug(P9_DEBUG_TRANS, "got new header\n");
 
 		/* Header size */
-		m->rc.size = P9_HDRSZ;
+		m->rc.size = 7;
 		err = p9_parse_header(&m->rc, &m->rc.size, NULL, NULL, 0);
 		if (err) {
 			p9_debug(P9_DEBUG_ERROR,
@@ -346,6 +347,7 @@ static void p9_read_work(struct work_struct *work)
 			p9_debug(P9_DEBUG_ERROR,
 				 "No recv fcall for tag %d (req %p), disconnecting!\n",
 				 m->rc.tag, m->rreq);
+			p9_req_put(m->client, m->rreq);
 			m->rreq = NULL;
 			err = -EIO;
 			goto error;
@@ -381,7 +383,7 @@ static void p9_read_work(struct work_struct *work)
 		m->rc.sdata = NULL;
 		m->rc.offset = 0;
 		m->rc.capacity = 0;
-		p9_req_put(m->rreq);
+		p9_req_put(m->client, m->rreq);
 		m->rreq = NULL;
 	}
 
@@ -495,7 +497,7 @@ static void p9_write_work(struct work_struct *work)
 	m->wpos += err;
 	if (m->wpos == m->wsize) {
 		m->wpos = m->wsize = 0;
-		p9_req_put(m->wreq);
+		p9_req_put(m->client, m->wreq);
 		m->wreq = NULL;
 	}
 
@@ -698,7 +700,7 @@ static int p9_fd_cancel(struct p9_client *client, struct p9_req_t *req)
 	if (req->status == REQ_STATUS_UNSENT) {
 		list_del(&req->req_list);
 		req->status = REQ_STATUS_FLSHD;
-		p9_req_put(req);
+		p9_req_put(client, req);
 		ret = 0;
 	}
 	spin_unlock(&client->lock);
@@ -725,7 +727,7 @@ static int p9_fd_cancelled(struct p9_client *client, struct p9_req_t *req)
 	list_del(&req->req_list);
 	req->status = REQ_STATUS_FLSHD;
 	spin_unlock(&client->lock);
-	p9_req_put(req);
+	p9_req_put(client, req);
 
 	return 0;
 }
@@ -823,14 +825,11 @@ static int p9_fd_open(struct p9_client *client, int rfd, int wfd)
 		goto out_free_ts;
 	if (!(ts->rd->f_mode & FMODE_READ))
 		goto out_put_rd;
-	/* prevent workers from hanging on IO when fd is a pipe */
-	ts->rd->f_flags |= O_NONBLOCK;
 	ts->wr = fget(wfd);
 	if (!ts->wr)
 		goto out_put_rd;
 	if (!(ts->wr->f_mode & FMODE_WRITE))
 		goto out_put_wr;
-	ts->wr->f_flags |= O_NONBLOCK;
 
 	client->trans = ts;
 	client->status = Connected;
@@ -852,10 +851,8 @@ static int p9_socket_open(struct p9_client *client, struct socket *csocket)
 	struct file *file;
 
 	p = kzalloc(sizeof(struct p9_trans_fd), GFP_KERNEL);
-	if (!p) {
-		sock_release(csocket);
+	if (!p)
 		return -ENOMEM;
-	}
 
 	csocket->sk->sk_allocation = GFP_NOIO;
 	file = sock_alloc_file(csocket, 0, NULL);
@@ -878,7 +875,7 @@ static int p9_socket_open(struct p9_client *client, struct socket *csocket)
 }
 
 /**
- * p9_mux_destroy - cancels all pending requests of mux
+ * p9_conn_destroy - cancels all pending requests of mux
  * @m: mux to destroy
  *
  */
@@ -891,12 +888,12 @@ static void p9_conn_destroy(struct p9_conn *m)
 	p9_mux_poll_stop(m);
 	cancel_work_sync(&m->rq);
 	if (m->rreq) {
-		p9_req_put(m->rreq);
+		p9_req_put(m->client, m->rreq);
 		m->rreq = NULL;
 	}
 	cancel_work_sync(&m->wq);
 	if (m->wreq) {
-		p9_req_put(m->wreq);
+		p9_req_put(m->client, m->wreq);
 		m->wreq = NULL;
 	}
 

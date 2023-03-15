@@ -7,9 +7,13 @@
 #if !defined(_TRACE_HOOK_TOPOLOGY_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_HOOK_TOPOLOGY_H
 
-#include <linux/tracepoint.h>
 #include <trace/hooks/vendor_hooks.h>
+
+#ifdef __GENKSYMS__
 #include <linux/cpumask.h>
+#endif
+
+struct cpumask;
 
 DECLARE_HOOK(android_vh_arch_set_freq_scale,
 	TP_PROTO(const struct cpumask *cpus, unsigned long freq,
@@ -20,7 +24,9 @@ DECLARE_HOOK(android_vh_update_topology_flags_workfn,
 	TP_PROTO(void *unused),
 	TP_ARGS(unused));
 
-/* macro versions of hooks are no longer required */
+DECLARE_RESTRICTED_HOOK(android_rvh_update_thermal_stats,
+	TP_PROTO(int cpu),
+	TP_ARGS(cpu), 1);
 
 #endif /* _TRACE_HOOK_TOPOLOGY_H */
 /* This part must be outside protection */

@@ -12,7 +12,16 @@
 #include <net/netns/generic.h>
 #include <net/sock.h>
 #include <net/af_rxrpc.h>
+#include <keys/rxrpc-type.h>
 #include "protocol.h"
+
+#if 0
+#define CHECK_SLAB_OKAY(X)				     \
+	BUG_ON(atomic_read((X)) >> (sizeof(atomic_t) - 2) == \
+	       (POISON_FREE << 8 | POISON_FREE))
+#else
+#define CHECK_SLAB_OKAY(X) do {} while (0)
+#endif
 
 #define FCRYPT_BSIZE 8
 struct rxrpc_crypt {
@@ -26,6 +35,7 @@ struct rxrpc_crypt {
 #define rxrpc_queue_delayed_work(WS,D)	\
 	queue_delayed_work(rxrpc_workqueue, (WS), (D))
 
+struct key_preparsed_payload;
 struct rxrpc_connection;
 
 /*
@@ -58,7 +68,7 @@ struct rxrpc_net {
 	struct proc_dir_entry	*proc_net;	/* Subdir in /proc/net */
 	u32			epoch;		/* Local epoch for detecting local-end reset */
 	struct list_head	calls;		/* List of calls active in this namespace */
-	rwlock_t		call_lock;	/* Lock for ->calls */
+	spinlock_t		call_lock;	/* Lock for ->calls */
 	atomic_t		nr_calls;	/* Count of allocated calls */
 
 	atomic_t		nr_conns;
@@ -78,7 +88,7 @@ struct rxrpc_net {
 	struct work_struct	client_conn_reaper;
 	struct timer_list	client_conn_reap_timer;
 
-	struct hlist_head	local_endpoints;
+	struct list_head	local_endpoints;
 	struct mutex		local_mutex;	/* Lock for ->local_endpoints */
 
 	DECLARE_HASHTABLE	(peer_hash, 10);
@@ -208,17 +218,30 @@ struct rxrpc_security {
 	/* Clean up a security service */
 	void (*exit)(void);
 
-	/* initialise a connection's security */
-	int (*init_connection_security)(struct rxrpc_connection *);
+	/* Parse the information from a server key */
+	int (*preparse_server_key)(struct key_preparsed_payload *);
 
-	/* prime a connection's packet security */
-	int (*prime_packet_security)(struct rxrpc_connection *);
+	/* Clean up the preparse buffer after parsing a server key */
+	void (*free_preparse_server_key)(struct key_preparsed_payload *);
+
+	/* Destroy the payload of a server key */
+	void (*destroy_server_key)(struct key *);
+
+	/* Describe a server key */
+	void (*describe_server_key)(const struct key *, struct seq_file *);
+
+	/* initialise a connection's security */
+	int (*init_connection_security)(struct rxrpc_connection *,
+					struct rxrpc_key_token *);
+
+	/* Work out how much data we can store in a packet, given an estimate
+	 * of the amount of data remaining.
+	 */
+	int (*how_much_data)(struct rxrpc_call *, size_t,
+			     size_t *, size_t *, size_t *);
 
 	/* impose security on a packet */
-	int (*secure_packet)(struct rxrpc_call *,
-			     struct sk_buff *,
-			     size_t,
-			     void *);
+	int (*secure_packet)(struct rxrpc_call *, struct sk_buff *, size_t);
 
 	/* verify the security on a received packet */
 	int (*verify_packet)(struct rxrpc_call *, struct sk_buff *,
@@ -256,9 +279,9 @@ struct rxrpc_security {
 struct rxrpc_local {
 	struct rcu_head		rcu;
 	atomic_t		active_users;	/* Number of users of the local endpoint */
-	refcount_t		ref;		/* Number of references to the structure */
+	atomic_t		usage;		/* Number of references to the structure */
 	struct rxrpc_net	*rxnet;		/* The network ns in which this resides */
-	struct hlist_node	link;
+	struct list_head	link;
 	struct socket		*socket;	/* my UDP socket */
 	struct work_struct	processor;
 	struct rxrpc_sock __rcu	*service;	/* Service(s) listening on this endpoint */
@@ -281,7 +304,7 @@ struct rxrpc_local {
  */
 struct rxrpc_peer {
 	struct rcu_head		rcu;		/* This must be first */
-	refcount_t		ref;
+	atomic_t		usage;
 	unsigned long		hash_key;
 	struct hlist_node	hash_link;
 	struct rxrpc_local	*local;
@@ -383,8 +406,7 @@ enum rxrpc_conn_proto_state {
  */
 struct rxrpc_bundle {
 	struct rxrpc_conn_parameters params;
-	refcount_t		ref;
-	atomic_t		active;		/* Number of active users */
+	atomic_t		usage;
 	unsigned int		debug_id;
 	bool			try_upgrade;	/* True if the bundle is attempting upgrade */
 	bool			alloc_conn;	/* True if someone's getting a conn */
@@ -405,7 +427,7 @@ struct rxrpc_connection {
 	struct rxrpc_conn_proto	proto;
 	struct rxrpc_conn_parameters params;
 
-	refcount_t		ref;
+	atomic_t		usage;
 	struct rcu_head		rcu;
 	struct list_head	cache_link;
 
@@ -431,10 +453,15 @@ struct rxrpc_connection {
 	struct list_head	proc_link;	/* link in procfs list */
 	struct list_head	link;		/* link in master connection list */
 	struct sk_buff_head	rx_queue;	/* received conn-level packets */
+
 	const struct rxrpc_security *security;	/* applied security module */
-	struct key		*server_key;	/* security for this service */
-	struct crypto_sync_skcipher *cipher;	/* encryption handle */
-	struct rxrpc_crypt	csum_iv;	/* packet checksum base */
+	union {
+		struct {
+			struct crypto_sync_skcipher *cipher;	/* encryption handle */
+			struct rxrpc_crypt csum_iv;	/* packet checksum base */
+			u32	nonce;		/* response re-use preventer */
+		} rxkad;
+	};
 	unsigned long		flags;
 	unsigned long		events;
 	unsigned long		idle_timestamp;	/* Time at which last became idle */
@@ -444,10 +471,7 @@ struct rxrpc_connection {
 	int			debug_id;	/* debug ID for printks */
 	atomic_t		serial;		/* packet serial number counter */
 	unsigned int		hi_serial;	/* highest serial number received */
-	u32			security_nonce;	/* response re-use preventer */
 	u32			service_id;	/* Service ID, possibly upgraded */
-	u8			size_align;	/* data size alignment (for security) */
-	u8			security_size;	/* security header size */
 	u8			security_ix;	/* security type */
 	u8			out_clientflag;	/* RXRPC_CLIENT_INITIATED if we are client */
 	u8			bundle_shift;	/* Index into bundle->avail_chans */
@@ -585,7 +609,7 @@ struct rxrpc_call {
 	int			error;		/* Local error incurred */
 	enum rxrpc_call_state	state;		/* current state of call */
 	enum rxrpc_call_completion completion;	/* Call completion condition */
-	refcount_t		ref;
+	atomic_t		usage;
 	u16			service_id;	/* service ID */
 	u8			security_ix;	/* Security type */
 	enum rxrpc_interruptibility interruptibility; /* At what point call may be interrupted */
@@ -881,8 +905,7 @@ struct rxrpc_connection *rxrpc_find_service_conn_rcu(struct rxrpc_peer *,
 						     struct sk_buff *);
 struct rxrpc_connection *rxrpc_prealloc_service_connection(struct rxrpc_net *, gfp_t);
 void rxrpc_new_incoming_connection(struct rxrpc_sock *, struct rxrpc_connection *,
-				   const struct rxrpc_security *, struct key *,
-				   struct sk_buff *);
+				   const struct rxrpc_security *, struct sk_buff *);
 void rxrpc_unpublish_service_conn(struct rxrpc_connection *);
 
 /*
@@ -899,10 +922,8 @@ extern const struct rxrpc_security rxrpc_no_security;
  * key.c
  */
 extern struct key_type key_type_rxrpc;
-extern struct key_type key_type_rxrpc_s;
 
 int rxrpc_request_key(struct rxrpc_sock *, sockptr_t , int);
-int rxrpc_server_keyring(struct rxrpc_sock *, sockptr_t, int);
 int rxrpc_get_server_data_key(struct rxrpc_connection *, const void *, time64_t,
 			      u32);
 
@@ -969,6 +990,7 @@ void rxrpc_send_keepalive(struct rxrpc_peer *);
 /*
  * peer_event.c
  */
+void rxrpc_encap_err_rcv(struct sock *sk, struct sk_buff *skb, unsigned int udp_offset);
 void rxrpc_error_report(struct sock *);
 void rxrpc_peer_keepalive_worker(struct work_struct *);
 
@@ -994,7 +1016,6 @@ void rxrpc_put_peer_locked(struct rxrpc_peer *);
 extern const struct seq_operations rxrpc_call_seq_ops;
 extern const struct seq_operations rxrpc_connection_seq_ops;
 extern const struct seq_operations rxrpc_peer_seq_ops;
-extern const struct seq_operations rxrpc_local_seq_ops;
 
 /*
  * recvmsg.c
@@ -1046,16 +1067,25 @@ extern const struct rxrpc_security rxkad;
  * security.c
  */
 int __init rxrpc_init_security(void);
+const struct rxrpc_security *rxrpc_security_lookup(u8);
 void rxrpc_exit_security(void);
 int rxrpc_init_client_conn_security(struct rxrpc_connection *);
-bool rxrpc_look_up_server_security(struct rxrpc_local *, struct rxrpc_sock *,
-				   const struct rxrpc_security **, struct key **,
-				   struct sk_buff *);
+const struct rxrpc_security *rxrpc_get_incoming_security(struct rxrpc_sock *,
+							 struct sk_buff *);
+struct key *rxrpc_look_up_server_security(struct rxrpc_connection *,
+					  struct sk_buff *, u32, u32);
 
 /*
  * sendmsg.c
  */
 int rxrpc_do_sendmsg(struct rxrpc_sock *, struct msghdr *, size_t);
+
+/*
+ * server_key.c
+ */
+extern struct key_type key_type_rxrpc_s;
+
+int rxrpc_server_keyring(struct rxrpc_sock *, sockptr_t, int);
 
 /*
  * skbuff.c

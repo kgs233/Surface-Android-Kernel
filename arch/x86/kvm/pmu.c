@@ -13,8 +13,6 @@
 #include <linux/types.h>
 #include <linux/kvm_host.h>
 #include <linux/perf_event.h>
-#include <linux/bsearch.h>
-#include <linux/sort.h>
 #include <asm/perf_event.h>
 #include "x86.h"
 #include "cpuid.h"
@@ -98,8 +96,7 @@ static void kvm_perf_overflow_intr(struct perf_event *perf_event,
 
 static void pmc_reprogram_counter(struct kvm_pmc *pmc, u32 type,
 				  u64 config, bool exclude_user,
-				  bool exclude_kernel, bool intr,
-				  bool in_tx, bool in_tx_cp)
+				  bool exclude_kernel, bool intr)
 {
 	struct perf_event *event;
 	struct perf_event_attr attr = {
@@ -115,16 +112,14 @@ static void pmc_reprogram_counter(struct kvm_pmc *pmc, u32 type,
 
 	attr.sample_period = get_sample_period(pmc, pmc->counter);
 
-	if (in_tx)
-		attr.config |= HSW_IN_TX;
-	if (in_tx_cp) {
+	if ((attr.config & HSW_IN_TX_CHECKPOINTED) &&
+	    guest_cpuid_is_intel(pmc->vcpu)) {
 		/*
 		 * HSW_IN_TX_CHECKPOINTED is not supported with nonzero
 		 * period. Just clear the sample period so at least
 		 * allocating the counter doesn't fail.
 		 */
 		attr.sample_period = 0;
-		attr.config |= HSW_IN_TX_CHECKPOINTED;
 	}
 
 	event = perf_event_create_kernel_counter(&attr, -1, current,
@@ -139,18 +134,20 @@ static void pmc_reprogram_counter(struct kvm_pmc *pmc, u32 type,
 	pmc->perf_event = event;
 	pmc_to_pmu(pmc)->event_count++;
 	clear_bit(pmc->idx, pmc_to_pmu(pmc)->reprogram_pmi);
+	pmc->is_paused = false;
 }
 
 static void pmc_pause_counter(struct kvm_pmc *pmc)
 {
 	u64 counter = pmc->counter;
 
-	if (!pmc->perf_event)
+	if (!pmc->perf_event || pmc->is_paused)
 		return;
 
 	/* update counter, reset event value to avoid redundant accumulation */
 	counter += perf_event_pause(pmc->perf_event, true);
 	pmc->counter = counter & pmc_bitmask(pmc);
+	pmc->is_paused = true;
 }
 
 static bool pmc_resume_counter(struct kvm_pmc *pmc)
@@ -165,17 +162,10 @@ static bool pmc_resume_counter(struct kvm_pmc *pmc)
 
 	/* reuse perf_event to serve as pmc_reprogram_counter() does*/
 	perf_event_enable(pmc->perf_event);
+	pmc->is_paused = false;
 
 	clear_bit(pmc->idx, (unsigned long *)&pmc_to_pmu(pmc)->reprogram_pmi);
 	return true;
-}
-
-static int cmp_u64(const void *pa, const void *pb)
-{
-	u64 a = *(u64 *)pa;
-	u64 b = *(u64 *)pb;
-
-	return (a > b) - (a < b);
 }
 
 void reprogram_gp_counter(struct kvm_pmc *pmc, u64 eventsel)
@@ -184,6 +174,7 @@ void reprogram_gp_counter(struct kvm_pmc *pmc, u64 eventsel)
 	u32 type = PERF_TYPE_RAW;
 	struct kvm *kvm = pmc->vcpu->kvm;
 	struct kvm_pmu_event_filter *filter;
+	int i;
 	struct kvm_pmu *pmu = vcpu_to_pmu(pmc->vcpu);
 	bool allow_event = true;
 
@@ -199,13 +190,16 @@ void reprogram_gp_counter(struct kvm_pmc *pmc, u64 eventsel)
 
 	filter = srcu_dereference(kvm->arch.pmu_event_filter, &kvm->srcu);
 	if (filter) {
-		__u64 key = eventsel & AMD64_RAW_EVENT_MASK_NB;
-
-		if (bsearch(&key, filter->events, filter->nevents,
-			    sizeof(__u64), cmp_u64))
-			allow_event = filter->action == KVM_PMU_EVENT_ALLOW;
-		else
-			allow_event = filter->action == KVM_PMU_EVENT_DENY;
+		for (i = 0; i < filter->nevents; i++)
+			if (filter->events[i] ==
+			    (eventsel & AMD64_RAW_EVENT_MASK_NB))
+				break;
+		if (filter->action == KVM_PMU_EVENT_ALLOW &&
+		    i == filter->nevents)
+			allow_event = false;
+		if (filter->action == KVM_PMU_EVENT_DENY &&
+		    i < filter->nevents)
+			allow_event = false;
 	}
 	if (!allow_event)
 		return;
@@ -232,9 +226,7 @@ void reprogram_gp_counter(struct kvm_pmc *pmc, u64 eventsel)
 	pmc_reprogram_counter(pmc, type, config,
 			      !(eventsel & ARCH_PERFMON_EVENTSEL_USR),
 			      !(eventsel & ARCH_PERFMON_EVENTSEL_OS),
-			      eventsel & ARCH_PERFMON_EVENTSEL_INT,
-			      (eventsel & HSW_IN_TX),
-			      (eventsel & HSW_IN_TX_CHECKPOINTED));
+			      eventsel & ARCH_PERFMON_EVENTSEL_INT);
 }
 EXPORT_SYMBOL_GPL(reprogram_gp_counter);
 
@@ -270,7 +262,7 @@ void reprogram_fixed_counter(struct kvm_pmc *pmc, u8 ctrl, int idx)
 			      kvm_x86_ops.pmu_ops->find_fixed_event(idx),
 			      !(en_field & 0x2), /* exclude user */
 			      !(en_field & 0x1), /* exclude kernel */
-			      pmi, false, false);
+			      pmi);
 }
 EXPORT_SYMBOL_GPL(reprogram_fixed_counter);
 
@@ -375,7 +367,7 @@ int kvm_pmu_rdpmc(struct kvm_vcpu *vcpu, unsigned idx, u64 *data)
 		return 1;
 
 	if (!(kvm_read_cr4(vcpu) & X86_CR4_PCE) &&
-	    (kvm_x86_ops.get_cpl(vcpu) != 0) &&
+	    (static_call(kvm_x86_get_cpl)(vcpu) != 0) &&
 	    (kvm_read_cr0(vcpu) & X86_CR0_PE))
 		return 1;
 
@@ -385,8 +377,11 @@ int kvm_pmu_rdpmc(struct kvm_vcpu *vcpu, unsigned idx, u64 *data)
 
 void kvm_pmu_deliver_pmi(struct kvm_vcpu *vcpu)
 {
-	if (lapic_in_kernel(vcpu))
+	if (lapic_in_kernel(vcpu)) {
+		if (kvm_x86_ops.pmu_ops->deliver_pmi)
+			kvm_x86_ops.pmu_ops->deliver_pmi(vcpu);
 		kvm_apic_local_deliver(vcpu->arch.apic, APIC_LVTPC);
+	}
 }
 
 bool kvm_pmu_is_valid_msr(struct kvm_vcpu *vcpu, u32 msr)
@@ -475,6 +470,9 @@ void kvm_pmu_cleanup(struct kvm_vcpu *vcpu)
 			pmc_stop_counter(pmc);
 	}
 
+	if (kvm_x86_ops.pmu_ops->cleanup)
+		kvm_x86_ops.pmu_ops->cleanup(vcpu);
+
 	bitmap_zero(pmu->pmc_in_use, X86_PMC_IDX_MAX);
 }
 
@@ -513,11 +511,6 @@ int kvm_vm_ioctl_set_pmu_event_filter(struct kvm *kvm, void __user *argp)
 
 	/* Ensure nevents can't be changed between the user copies. */
 	*filter = tmp;
-
-	/*
-	 * Sort the in-kernel list so that we can search it with bsearch.
-	 */
-	sort(&filter->events, filter->nevents, sizeof(__u64), cmp_u64, NULL);
 
 	mutex_lock(&kvm->lock);
 	filter = rcu_replace_pointer(kvm->arch.pmu_event_filter, filter,

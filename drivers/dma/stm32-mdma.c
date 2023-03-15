@@ -198,7 +198,7 @@
 #define STM32_MDMA_MAX_CHANNELS		32
 #define STM32_MDMA_MAX_REQUESTS		256
 #define STM32_MDMA_MAX_BURST		128
-#define STM32_MDMA_VERY_HIGH_PRIORITY	0x11
+#define STM32_MDMA_VERY_HIGH_PRIORITY	0x3
 
 enum stm32_mdma_trigger_mode {
 	STM32_MDMA_BUFFER,
@@ -338,7 +338,7 @@ static struct stm32_mdma_desc *stm32_mdma_alloc_desc(
 	struct stm32_mdma_desc *desc;
 	int i;
 
-	desc = kzalloc(offsetof(typeof(*desc), node[count]), GFP_NOWAIT);
+	desc = kzalloc(struct_size(desc, node, count), GFP_NOWAIT);
 	if (!desc)
 		return NULL;
 

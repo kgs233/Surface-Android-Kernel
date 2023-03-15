@@ -5,6 +5,7 @@
 #include <linux/atomic.h>
 #include <linux/kernel.h>
 #include <asm/page.h>
+#include <linux/android_vendor.h>
 
 struct page_counter {
 	atomic_long_t usage;
@@ -12,7 +13,6 @@ struct page_counter {
 	unsigned long low;
 	unsigned long high;
 	unsigned long max;
-	struct page_counter *parent;
 
 	/* effective memory.min and memory.min usage tracking */
 	unsigned long emin;
@@ -27,6 +27,15 @@ struct page_counter {
 	/* legacy */
 	unsigned long watermark;
 	unsigned long failcnt;
+	ANDROID_VENDOR_DATA(1);
+
+	/*
+	 * 'parent' is placed here to be far from 'usage' to reduce
+	 * cache false sharing, as 'usage' is written mostly while
+	 * parent is frequently read for cgroup's hierarchical
+	 * counting nature.
+	 */
+	struct page_counter *parent;
 };
 
 #if BITS_PER_LONG == 32

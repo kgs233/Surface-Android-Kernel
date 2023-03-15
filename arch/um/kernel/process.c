@@ -203,15 +203,12 @@ void initial_thread_cb(void (*proc)(void *), void *arg)
 	kmalloc_ok = save_kmalloc_ok;
 }
 
-static void um_idle_sleep(void)
+void um_idle_sleep(void)
 {
-	unsigned long long duration = UM_NSEC_PER_SEC;
-
-	if (time_travel_mode != TT_MODE_OFF) {
-		time_travel_sleep(duration);
-	} else {
-		os_idle_sleep(duration);
-	}
+	if (time_travel_mode != TT_MODE_OFF)
+		time_travel_sleep();
+	else
+		os_idle_sleep();
 }
 
 void arch_cpu_idle(void)
@@ -372,7 +369,7 @@ unsigned long get_wchan(struct task_struct *p)
 	unsigned long stack_page, sp, ip;
 	bool seen_sched = 0;
 
-	if ((p == NULL) || (p == current) || (p->state == TASK_RUNNING))
+	if ((p == NULL) || (p == current) || task_is_running(p))
 		return 0;
 
 	stack_page = (unsigned long) task_stack_page(p);

@@ -9,6 +9,7 @@
 #include <linux/memory.h>
 #include <linux/hugetlb.h>
 #include <linux/page_owner.h>
+#include <linux/page_pinner.h>
 #include <linux/migrate.h>
 #include "internal.h"
 
@@ -88,13 +89,12 @@ static void unset_migratetype_isolate(struct page *page, unsigned migratetype)
 	 */
 	if (PageBuddy(page)) {
 		order = buddy_order(page);
-		if (order >= pageblock_order) {
+		if (order >= pageblock_order && order < MAX_ORDER - 1) {
 			pfn = page_to_pfn(page);
 			buddy_pfn = __find_buddy_pfn(pfn, order);
 			buddy = page + (buddy_pfn - pfn);
 
-			if (pfn_valid_within(buddy_pfn) &&
-			    !is_migrate_isolate_page(buddy)) {
+			if (!is_migrate_isolate_page(buddy)) {
 				__isolate_free_page(page, order);
 				isolated_page = true;
 			}
@@ -174,15 +174,14 @@ __first_valid_page(unsigned long pfn, unsigned long nr_pages)
  * A call to drain_all_pages() after isolation can flush most of them. However
  * in some cases pages might still end up on pcp lists and that would allow
  * for their allocation even when they are in fact isolated already. Depending
- * on how strong of a guarantee the caller needs, further drain_all_pages()
- * might be needed (e.g. __offline_pages will need to call it after check for
- * isolated range for a next retry).
+ * on how strong of a guarantee the caller needs, zone_pcp_disable/enable()
+ * might be used to flush and disable pcplist before isolation and enable after
+ * unisolation.
  *
  * Return: 0 on success and -EBUSY if any part of range cannot be isolated.
  */
 int start_isolate_page_range(unsigned long start_pfn, unsigned long end_pfn,
-			     unsigned migratetype, int flags,
-			     unsigned long *failed_pfn)
+			     unsigned migratetype, int flags)
 {
 	unsigned long pfn;
 	unsigned long undo_pfn;
@@ -198,8 +197,6 @@ int start_isolate_page_range(unsigned long start_pfn, unsigned long end_pfn,
 		if (page) {
 			if (set_migratetype_isolate(page, migratetype, flags)) {
 				undo_pfn = pfn;
-				if (failed_pfn)
-					*failed_pfn = page_to_pfn(page);
 				goto undo;
 			}
 		}
@@ -253,10 +250,6 @@ __test_page_isolated_in_pageblock(unsigned long pfn, unsigned long end_pfn,
 	struct page *page;
 
 	while (pfn < end_pfn) {
-		if (!pfn_valid_within(pfn)) {
-			pfn++;
-			continue;
-		}
 		page = pfn_to_page(pfn);
 		if (PageBuddy(page))
 			/*
@@ -285,11 +278,12 @@ __test_page_isolated_in_pageblock(unsigned long pfn, unsigned long end_pfn,
 
 /* Caller should ensure that requested range is in a single zone */
 int test_pages_isolated(unsigned long start_pfn, unsigned long end_pfn,
-			int isol_flags, unsigned long *failed_pfn)
+			int isol_flags)
 {
 	unsigned long pfn, flags;
 	struct page *page;
 	struct zone *zone;
+	int ret;
 
 	/*
 	 * Note: pageblock_nr_pages != MAX_ORDER. Then, chunks of free pages
@@ -302,21 +296,23 @@ int test_pages_isolated(unsigned long start_pfn, unsigned long end_pfn,
 			break;
 	}
 	page = __first_valid_page(start_pfn, end_pfn - start_pfn);
-	if ((pfn < end_pfn) || !page)
-		return -EBUSY;
+	if ((pfn < end_pfn) || !page) {
+		ret = -EBUSY;
+		goto out;
+	}
+
 	/* Check all pages are free or marked as ISOLATED */
 	zone = page_zone(page);
 	spin_lock_irqsave(&zone->lock, flags);
 	pfn = __test_page_isolated_in_pageblock(start_pfn, end_pfn, isol_flags);
 	spin_unlock_irqrestore(&zone->lock, flags);
 
-	trace_test_pages_isolated(start_pfn, end_pfn, pfn);
-	if (pfn < end_pfn) {
-		page_pinner_failure_detect(pfn_to_page(pfn));
-		if (failed_pfn)
-			*failed_pfn = pfn;
-		return -EBUSY;
-	}
+	ret = pfn < end_pfn ? -EBUSY : 0;
 
-	return 0;
+out:
+	trace_test_pages_isolated(start_pfn, end_pfn, pfn);
+	if (pfn < end_pfn)
+		page_pinner_failure_detect(pfn_to_page(pfn));
+
+	return ret;
 }

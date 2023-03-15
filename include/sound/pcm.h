@@ -16,6 +16,7 @@
 #include <linux/bitops.h>
 #include <linux/pm_qos.h>
 #include <linux/refcount.h>
+#include <linux/android_kabi.h>
 
 #define snd_pcm_substream_chip(substream) ((substream)->private_data)
 #define snd_pcm_chip(pcm) ((pcm)->private_data)
@@ -77,6 +78,7 @@ struct snd_pcm_ops {
 			     unsigned long offset);
 	int (*mmap)(struct snd_pcm_substream *substream, struct vm_area_struct *vma);
 	int (*ack)(struct snd_pcm_substream *substream);
+	ANDROID_KABI_RESERVE(1);
 };
 
 /*
@@ -229,7 +231,7 @@ typedef int (*snd_pcm_hw_rule_func_t)(struct snd_pcm_hw_params *params,
 struct snd_pcm_hw_rule {
 	unsigned int cond;
 	int var;
-	int deps[4];
+	int deps[5];
 
 	snd_pcm_hw_rule_func_t func;
 	void *private;
@@ -398,6 +400,8 @@ struct snd_pcm_runtime {
 	wait_queue_head_t tsleep;	/* transfer sleep */
 	struct fasync_struct *fasync;
 	bool stop_operating;		/* sync_stop will be called */
+	struct mutex buffer_mutex;	/* protect for buffer changes */
+	atomic_t buffer_accessing;	/* >0: in r/w operation, <0: blocked */
 
 	/* -- private section -- */
 	void *private_data;
@@ -428,10 +432,8 @@ struct snd_pcm_runtime {
 	/* -- OSS things -- */
 	struct snd_pcm_oss_runtime oss;
 #endif
-#ifndef __GENKSYMS__
-	struct mutex buffer_mutex;	/* protect for buffer changes */
-	atomic_t buffer_accessing;	/* >0: in r/w operation, <0: blocked */
-#endif
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 struct snd_pcm_group {		/* keep linked substreams */
@@ -484,6 +486,8 @@ struct snd_pcm_substream {
 	/* misc flags */
 	unsigned int hw_opened: 1;
 	unsigned int managed_buffer_alloc:1;
+	ANDROID_VENDOR_DATA(1);
+	ANDROID_KABI_RESERVE(1);
 };
 
 #define SUBSTREAM_BUSY(substream) ((substream)->ref_count > 0)
@@ -508,6 +512,7 @@ struct snd_pcm_str {
 #endif
 	struct snd_kcontrol *chmap_kctl; /* channel-mapping controls */
 	struct device dev;
+	ANDROID_KABI_RESERVE(1);
 };
 
 struct snd_pcm {
@@ -530,6 +535,7 @@ struct snd_pcm {
 #if IS_ENABLED(CONFIG_SND_PCM_OSS)
 	struct snd_pcm_oss oss;
 #endif
+	ANDROID_KABI_RESERVE(1);
 };
 
 /*
@@ -1070,6 +1076,7 @@ void snd_pcm_set_ops(struct snd_pcm * pcm, int direction,
 void snd_pcm_set_sync(struct snd_pcm_substream *substream);
 int snd_pcm_lib_ioctl(struct snd_pcm_substream *substream,
 		      unsigned int cmd, void *arg);                      
+void snd_pcm_period_elapsed_under_stream_lock(struct snd_pcm_substream *substream);
 void snd_pcm_period_elapsed(struct snd_pcm_substream *substream);
 snd_pcm_sframes_t __snd_pcm_lib_xfer(struct snd_pcm_substream *substream,
 				     void *buf, bool interleaved,
@@ -1207,11 +1214,48 @@ void snd_pcm_lib_preallocate_pages_for_all(struct snd_pcm *pcm,
 int snd_pcm_lib_malloc_pages(struct snd_pcm_substream *substream, size_t size);
 int snd_pcm_lib_free_pages(struct snd_pcm_substream *substream);
 
-void snd_pcm_set_managed_buffer(struct snd_pcm_substream *substream, int type,
-				struct device *data, size_t size, size_t max);
-void snd_pcm_set_managed_buffer_all(struct snd_pcm *pcm, int type,
-				    struct device *data,
-				    size_t size, size_t max);
+int snd_pcm_set_managed_buffer(struct snd_pcm_substream *substream, int type,
+			       struct device *data, size_t size, size_t max);
+int snd_pcm_set_managed_buffer_all(struct snd_pcm *pcm, int type,
+				   struct device *data,
+				   size_t size, size_t max);
+
+/**
+ * snd_pcm_set_fixed_buffer - Preallocate and set up the fixed size PCM buffer
+ * @substream: the pcm substream instance
+ * @type: DMA type (SNDRV_DMA_TYPE_*)
+ * @data: DMA type dependent data
+ * @size: the requested pre-allocation size in bytes
+ *
+ * This is a variant of snd_pcm_set_managed_buffer(), but this pre-allocates
+ * only the given sized buffer and doesn't allow re-allocation nor dynamic
+ * allocation of a larger buffer unlike the standard one.
+ * The function may return -ENOMEM error, hence the caller must check it.
+ */
+static inline int __must_check
+snd_pcm_set_fixed_buffer(struct snd_pcm_substream *substream, int type,
+				 struct device *data, size_t size)
+{
+	return snd_pcm_set_managed_buffer(substream, type, data, size, 0);
+}
+
+/**
+ * snd_pcm_set_fixed_buffer_all - Preallocate and set up the fixed size PCM buffer
+ * @pcm: the pcm instance
+ * @type: DMA type (SNDRV_DMA_TYPE_*)
+ * @data: DMA type dependent data
+ * @size: the requested pre-allocation size in bytes
+ *
+ * Apply the set up of the fixed buffer via snd_pcm_set_fixed_buffer() for
+ * all substream.  If any of allocation fails, it returns -ENOMEM, hence the
+ * caller must check the return value.
+ */
+static inline int __must_check
+snd_pcm_set_fixed_buffer_all(struct snd_pcm *pcm, int type,
+			     struct device *data, size_t size)
+{
+	return snd_pcm_set_managed_buffer_all(pcm, type, data, size, 0);
+}
 
 int _snd_pcm_lib_alloc_vmalloc_buffer(struct snd_pcm_substream *substream,
 				      size_t size, gfp_t gfp_flags);
@@ -1257,14 +1301,6 @@ static inline int snd_pcm_lib_alloc_vmalloc_32_buffer
 
 #define snd_pcm_get_dma_buf(substream) ((substream)->runtime->dma_buffer_p)
 
-#ifdef CONFIG_SND_DMA_SGBUF
-/*
- * SG-buffer handling
- */
-#define snd_pcm_substream_sgbuf(substream) \
-	snd_pcm_get_dma_buf(substream)->private_data
-#endif /* SND_DMA_SGBUF */
-
 /**
  * snd_pcm_sgbuf_get_addr - Get the DMA address at the corresponding offset
  * @substream: PCM substream
@@ -1274,17 +1310,6 @@ static inline dma_addr_t
 snd_pcm_sgbuf_get_addr(struct snd_pcm_substream *substream, unsigned int ofs)
 {
 	return snd_sgbuf_get_addr(snd_pcm_get_dma_buf(substream), ofs);
-}
-
-/**
- * snd_pcm_sgbuf_get_ptr - Get the virtual address at the corresponding offset
- * @substream: PCM substream
- * @ofs: byte offset
- */
-static inline void *
-snd_pcm_sgbuf_get_ptr(struct snd_pcm_substream *substream, unsigned int ofs)
-{
-	return snd_sgbuf_get_ptr(snd_pcm_get_dma_buf(substream), ofs);
 }
 
 /**

@@ -2,6 +2,8 @@
 #ifndef _LINUX_EXPORT_H
 #define _LINUX_EXPORT_H
 
+#include <linux/stringify.h>
+
 /*
  * Export symbols from the kernel to modules.  Forked from module.h
  * to reduce the amount of pointless cruft we feed to gcc when only
@@ -63,38 +65,11 @@ struct kernel_symbol {
 	int namespace_offset;
 };
 #else
-#ifdef CONFIG_CFI_CLANG
-#include <linux/compiler.h>
-/*
- * With -fno-sanitize-cfi-canonical-jump-tables, the compiler replaces
- * references to functions with jump table addresses. Use inline assembly
- * to emit ksymtab entries that point to the actual function instead.
- */
-#define ___KSYMTAB_ENTRY(sym, sec, size)				\
-	__ADDRESSABLE(sym)						\
-	asm("	.section \"___ksymtab" sec "+" #sym "\", \"a\"	\n"	\
-	    "	.balign " #size "				\n"	\
-	    "__ksymtab_" #sym ":				\n"	\
-	    "	." #size "byte	" #sym "			\n"	\
-	    "	." #size "byte	__kstrtab_" #sym "		\n"	\
-	    "	." #size "byte	__kstrtabns_" #sym "		\n"	\
-	    "	.previous					\n")
-
-#ifdef CONFIG_64BIT
-#define __KSYMTAB_ENTRY(sym, sec)	___KSYMTAB_ENTRY(sym, sec, 8)
-#else
-#define __KSYMTAB_ENTRY(sym, sec)	___KSYMTAB_ENTRY(sym, sec, 4)
-#endif
-
-#else /* !CONFIG_CFI_CLANG */
-
 #define __KSYMTAB_ENTRY(sym, sec)					\
 	static const struct kernel_symbol __ksymtab_##sym		\
 	__attribute__((section("___ksymtab" sec "+" #sym), used))	\
 	__aligned(sizeof(void *))					\
 	= { (unsigned long)&sym, __kstrtab_##sym, __kstrtabns_##sym }
-
-#endif
 
 struct kernel_symbol {
 	unsigned long value;
@@ -181,7 +156,6 @@ struct kernel_symbol {
 #endif /* CONFIG_MODULES */
 
 #ifdef DEFAULT_SYMBOL_NAMESPACE
-#include <linux/stringify.h>
 #define _EXPORT_SYMBOL(sym, sec)	__EXPORT_SYMBOL(sym, sec, __stringify(DEFAULT_SYMBOL_NAMESPACE))
 #else
 #define _EXPORT_SYMBOL(sym, sec)	__EXPORT_SYMBOL(sym, sec, "")
@@ -189,19 +163,8 @@ struct kernel_symbol {
 
 #define EXPORT_SYMBOL(sym)		_EXPORT_SYMBOL(sym, "")
 #define EXPORT_SYMBOL_GPL(sym)		_EXPORT_SYMBOL(sym, "_gpl")
-#define EXPORT_SYMBOL_GPL_FUTURE(sym)	_EXPORT_SYMBOL(sym, "_gpl_future")
-#define _EXPORT_SYMBOL_NS(sym, ns)	__EXPORT_SYMBOL(sym, "", #ns)
-#define _EXPORT_SYMBOL_NS_GPL(sym, ns)	__EXPORT_SYMBOL(sym, "_gpl", #ns)
-#define EXPORT_SYMBOL_NS(sym, ns)	_EXPORT_SYMBOL_NS(sym, ns)
-#define EXPORT_SYMBOL_NS_GPL(sym, ns)	_EXPORT_SYMBOL_NS_GPL(sym, ns)
-
-#ifdef CONFIG_UNUSED_SYMBOLS
-#define EXPORT_UNUSED_SYMBOL(sym)	_EXPORT_SYMBOL(sym, "_unused")
-#define EXPORT_UNUSED_SYMBOL_GPL(sym)	_EXPORT_SYMBOL(sym, "_unused_gpl")
-#else
-#define EXPORT_UNUSED_SYMBOL(sym)
-#define EXPORT_UNUSED_SYMBOL_GPL(sym)
-#endif
+#define EXPORT_SYMBOL_NS(sym, ns)	__EXPORT_SYMBOL(sym, "", __stringify(ns))
+#define EXPORT_SYMBOL_NS_GPL(sym, ns)	__EXPORT_SYMBOL(sym, "_gpl", __stringify(ns))
 
 #endif /* !__ASSEMBLY__ */
 

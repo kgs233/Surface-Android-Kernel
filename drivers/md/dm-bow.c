@@ -446,7 +446,6 @@ static int prepare_log(struct bow_context *bc)
 	ret = split_range(bc, &free_br, &bi_iter);
 	if (ret)
 		return ret;
-	free_br->type = SECTOR0_CURRENT;
 
 	/* Copy data */
 	ret = copy_data(bc, first_br, free_br, NULL);
@@ -454,6 +453,8 @@ static int prepare_log(struct bow_context *bc)
 		return ret;
 
 	bc->log_sector->sector0 = free_br->sector;
+
+	set_type(bc, &free_br, SECTOR0_CURRENT);
 
 	/* Find free sector to back up original sector zero */
 	free_br = find_free_range(bc);
@@ -599,16 +600,6 @@ static void dm_bow_dtr(struct dm_target *ti)
 	struct bow_context *bc = (struct bow_context *) ti->private;
 	struct kobject *kobj;
 
-	mutex_lock(&bc->ranges_lock);
-	while (rb_first(&bc->ranges)) {
-		struct bow_range *br = container_of(rb_first(&bc->ranges),
-						    struct bow_range, node);
-
-		rb_erase(&br->node, &bc->ranges);
-		kfree(br);
-	}
-	mutex_unlock(&bc->ranges_lock);
-
 	if (bc->workqueue)
 		destroy_workqueue(bc->workqueue);
 	if (bc->bufio)
@@ -620,6 +611,15 @@ static void dm_bow_dtr(struct dm_target *ti)
 		wait_for_completion(dm_get_completion_from_kobject(kobj));
 	}
 
+	while (rb_first(&bc->ranges)) {
+		struct bow_range *br = container_of(rb_first(&bc->ranges),
+					      struct bow_range, node);
+
+		rb_erase(&br->node, &bc->ranges);
+		kfree(br);
+	}
+
+	mutex_destroy(&bc->ranges_lock);
 	kfree(bc->log_sector);
 	kfree(bc);
 }
@@ -694,7 +694,6 @@ static int dm_bow_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	struct bow_context *bc;
 	struct bow_range *br;
 	int ret;
-	struct mapped_device *md = dm_table_get_md(ti->table);
 
 	if (argc < 1) {
 		ti->error = "Invalid argument count";
@@ -735,14 +734,6 @@ static int dm_bow_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	init_completion(&bc->kobj_holder.completion);
-	ret = kobject_init_and_add(&bc->kobj_holder.kobj, &bow_ktype,
-				   &disk_to_dev(dm_disk(md))->kobj, "%s",
-				   "bow");
-	if (ret) {
-		ti->error = "Cannot create sysfs node";
-		goto bad;
-	}
-
 	mutex_init(&bc->ranges_lock);
 	bc->ranges = RB_ROOT;
 	bc->bufio = dm_bufio_client_create(bc->dev->bdev, bc->block_size, 1, 0,
@@ -797,6 +788,22 @@ static int dm_bow_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 bad:
 	dm_bow_dtr(ti);
 	return ret;
+}
+
+void dm_bow_resume(struct dm_target *ti)
+{
+	struct mapped_device *md = dm_table_get_md(ti->table);
+	struct bow_context *bc = ti->private;
+	int ret;
+
+	if (bc->kobj_holder.kobj.state_initialized)
+		return;
+
+	ret = kobject_init_and_add(&bc->kobj_holder.kobj, &bow_ktype,
+				   &disk_to_dev(dm_disk(md))->kobj, "%s",
+				   "bow");
+	if (ret)
+		ti->error = "Cannot create sysfs node";
 }
 
 /****** Handle writes ******/
@@ -991,10 +998,10 @@ static int handle_sector0(struct bow_context *bc, struct bio *bio)
 	int ret = DM_MAPIO_REMAPPED;
 
 	if (bio->bi_iter.bi_size > bc->block_size) {
-		struct bio * split = bio_split(bio,
-					       bc->block_size >> SECTOR_SHIFT,
-					       GFP_NOIO,
-					       &fs_bio_set);
+		struct bio *split = bio_split(bio,
+					      bc->block_size >> SECTOR_SHIFT,
+					      GFP_NOIO,
+					      &fs_bio_set);
 		if (!split) {
 			DMERR("Failed to split bio");
 			bio->bi_status = BLK_STS_RESOURCE;
@@ -1184,7 +1191,6 @@ static void dm_bow_tablestatus(struct dm_target *ti, char *result,
 		return;
 	}
 
-	mutex_lock(&bc->ranges_lock);
 	for (i = rb_first(&bc->ranges); i; i = rb_next(i)) {
 		struct bow_range *br = container_of(i, struct bow_range, node);
 
@@ -1192,11 +1198,11 @@ static void dm_bow_tablestatus(struct dm_target *ti, char *result,
 				    readable_type[br->type],
 				    (unsigned long long)br->sector);
 		if (result >= end)
-			goto unlock;
+			return;
 
 		result += scnprintf(result, end - result, "\n");
 		if (result >= end)
-			goto unlock;
+			return;
 
 		if (br->type == TRIMMED)
 			++trimmed_range_count;
@@ -1218,22 +1224,19 @@ static void dm_bow_tablestatus(struct dm_target *ti, char *result,
 		if (!rb_next(i)) {
 			scnprintf(result, end - result,
 				  "\nERROR: Last range not of type TOP");
-			goto unlock;
+			return;
 		}
 
 		if (br->sector > range_top(br)) {
 			scnprintf(result, end - result,
 				  "\nERROR: sectors out of order");
-			goto unlock;
+			return;
 		}
 	}
 
 	if (trimmed_range_count != trimmed_list_length)
 		scnprintf(result, end - result,
 			  "\nERROR: not all trimmed ranges in trimmed list");
-
-unlock:
-	mutex_unlock(&bc->ranges_lock);
 }
 
 static void dm_bow_status(struct dm_target *ti, status_type_t type,
@@ -1242,6 +1245,7 @@ static void dm_bow_status(struct dm_target *ti, status_type_t type,
 {
 	switch (type) {
 	case STATUSTYPE_INFO:
+	case STATUSTYPE_IMA:
 		if (maxlen)
 			result[0] = 0;
 		break;
@@ -1276,6 +1280,7 @@ static struct target_type bow_target = {
 	.features = DM_TARGET_PASSES_CRYPTO,
 	.module = THIS_MODULE,
 	.ctr    = dm_bow_ctr,
+	.resume = dm_bow_resume,
 	.dtr    = dm_bow_dtr,
 	.map    = dm_bow_map,
 	.status = dm_bow_status,

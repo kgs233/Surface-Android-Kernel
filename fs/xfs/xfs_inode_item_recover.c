@@ -125,17 +125,17 @@ static inline bool xfs_log_dinode_has_bigtime(const struct xfs_log_dinode *ld)
 static inline xfs_timestamp_t
 xfs_log_dinode_to_disk_ts(
 	struct xfs_log_dinode		*from,
-	const xfs_ictimestamp_t		its)
+	const xfs_log_timestamp_t	its)
 {
 	struct xfs_legacy_timestamp	*lts;
-	struct xfs_legacy_ictimestamp	*lits;
+	struct xfs_log_legacy_timestamp	*lits;
 	xfs_timestamp_t			ts;
 
 	if (xfs_log_dinode_has_bigtime(from))
 		return cpu_to_be64(its);
 
 	lts = (struct xfs_legacy_timestamp *)&ts;
-	lits = (struct xfs_legacy_ictimestamp *)&its;
+	lits = (struct xfs_log_legacy_timestamp *)&its;
 	lts->t_sec = cpu_to_be32(lits->t_sec);
 	lts->t_nsec = cpu_to_be32(lits->t_nsec);
 
@@ -295,7 +295,7 @@ xlog_recover_inode_commit_pass2(
 	 * superblock flag to determine whether we need to look at di_flushiter
 	 * to skip replay when the on disk inode is newer than the log one
 	 */
-	if (!xfs_sb_version_has_v3inode(&mp->m_sb) &&
+	if (!xfs_has_v3inodes(mp) &&
 	    ldip->di_flushiter < be16_to_cpu(dip->di_flushiter)) {
 		/*
 		 * Deal with the wrap case, DI_MAX_FLUSH is less

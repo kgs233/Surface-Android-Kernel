@@ -47,7 +47,7 @@ static inline struct kcm_tx_msg *kcm_tx_msg(struct sk_buff *skb)
 static void report_csk_error(struct sock *csk, int err)
 {
 	csk->sk_err = EPIPE;
-	csk->sk_error_report(csk);
+	sk_error_report(csk);
 }
 
 static void kcm_abort_tx_psock(struct kcm_psock *psock, int err,
@@ -221,7 +221,7 @@ static void requeue_rx_msgs(struct kcm_mux *mux, struct sk_buff_head *head)
 	struct sk_buff *skb;
 	struct kcm_sock *kcm;
 
-	while ((skb = skb_dequeue(head))) {
+	while ((skb = __skb_dequeue(head))) {
 		/* Reset destructor to avoid calling kcm_rcv_ready */
 		skb->destructor = sock_rfree;
 		skb_orphan(skb);
@@ -668,7 +668,7 @@ do_frag:
 
 				/* Hard failure in sending message, abort this
 				 * psock since it has lost framing
-				 * synchonization and retry sending the
+				 * synchronization and retry sending the
 				 * message from the beginning.
 				 */
 				kcm_abort_tx_psock(psock, ret ? -ret : EPIPE,
@@ -791,7 +791,7 @@ static ssize_t kcm_sendpage(struct socket *sock, struct page *page,
 
 		if (skb_can_coalesce(skb, i, page, offset)) {
 			skb_frag_size_add(&skb_shinfo(skb)->frags[i - 1], size);
-			skb_shinfo(skb)->tx_flags |= SKBTX_SHARED_FRAG;
+			skb_shinfo(skb)->flags |= SKBFL_SHARED_FRAG;
 			goto coalesced;
 		}
 
@@ -838,8 +838,8 @@ static ssize_t kcm_sendpage(struct socket *sock, struct page *page,
 	}
 
 	get_page(page);
-	skb_fill_page_desc(skb, i, page, offset, size);
-	skb_shinfo(skb)->tx_flags |= SKBTX_SHARED_FRAG;
+	skb_fill_page_desc_noacc(skb, i, page, offset, size);
+	skb_shinfo(skb)->flags |= SKBFL_SHARED_FRAG;
 
 coalesced:
 	skb->len += size;
@@ -1084,18 +1084,53 @@ out_error:
 	return err;
 }
 
+static struct sk_buff *kcm_wait_data(struct sock *sk, int flags,
+				     long timeo, int *err)
+{
+	struct sk_buff *skb;
+
+	while (!(skb = skb_peek(&sk->sk_receive_queue))) {
+		if (sk->sk_err) {
+			*err = sock_error(sk);
+			return NULL;
+		}
+
+		if (sock_flag(sk, SOCK_DONE))
+			return NULL;
+
+		if ((flags & MSG_DONTWAIT) || !timeo) {
+			*err = -EAGAIN;
+			return NULL;
+		}
+
+		sk_wait_data(sk, &timeo, NULL);
+
+		/* Handle signals */
+		if (signal_pending(current)) {
+			*err = sock_intr_errno(timeo);
+			return NULL;
+		}
+	}
+
+	return skb;
+}
+
 static int kcm_recvmsg(struct socket *sock, struct msghdr *msg,
 		       size_t len, int flags)
 {
-	int noblock = flags & MSG_DONTWAIT;
 	struct sock *sk = sock->sk;
 	struct kcm_sock *kcm = kcm_sk(sk);
 	int err = 0;
+	long timeo;
 	struct strp_msg *stm;
 	int copied = 0;
 	struct sk_buff *skb;
 
-	skb = skb_recv_datagram(sk, flags, noblock, &err);
+	timeo = sock_rcvtimeo(sk, flags & MSG_DONTWAIT);
+
+	lock_sock(sk);
+
+	skb = kcm_wait_data(sk, flags, timeo, &err);
 	if (!skb)
 		goto out;
 
@@ -1126,11 +1161,14 @@ msg_finished:
 			/* Finished with message */
 			msg->msg_flags |= MSG_EOR;
 			KCM_STATS_INCR(kcm->stats.rx_msgs);
+			skb_unlink(skb, &sk->sk_receive_queue);
+			kfree_skb(skb);
 		}
 	}
 
 out:
-	skb_free_datagram(sk, skb);
+	release_sock(sk);
+
 	return copied ? : err;
 }
 
@@ -1138,9 +1176,9 @@ static ssize_t kcm_splice_read(struct socket *sock, loff_t *ppos,
 			       struct pipe_inode_info *pipe, size_t len,
 			       unsigned int flags)
 {
-	int noblock = flags & MSG_DONTWAIT;
 	struct sock *sk = sock->sk;
 	struct kcm_sock *kcm = kcm_sk(sk);
+	long timeo;
 	struct strp_msg *stm;
 	int err = 0;
 	ssize_t copied;
@@ -1148,7 +1186,11 @@ static ssize_t kcm_splice_read(struct socket *sock, loff_t *ppos,
 
 	/* Only support splice for SOCKSEQPACKET */
 
-	skb = skb_recv_datagram(sk, flags, noblock, &err);
+	timeo = sock_rcvtimeo(sk, flags & MSG_DONTWAIT);
+
+	lock_sock(sk);
+
+	skb = kcm_wait_data(sk, flags, timeo, &err);
 	if (!skb)
 		goto err_out;
 
@@ -1176,11 +1218,13 @@ static ssize_t kcm_splice_read(struct socket *sock, loff_t *ppos,
 	 * finish reading the message.
 	 */
 
-	skb_free_datagram(sk, skb);
+	release_sock(sk);
+
 	return copied;
 
 err_out:
-	skb_free_datagram(sk, skb);
+	release_sock(sk);
+
 	return err;
 }
 
@@ -1375,7 +1419,7 @@ static int kcm_attach(struct socket *sock, struct socket *csock,
 
 	write_lock_bh(&csk->sk_callback_lock);
 
-	/* Check if sk_user_data is aready by KCM or someone else.
+	/* Check if sk_user_data is already by KCM or someone else.
 	 * Must be done under lock to prevent race conditions.
 	 */
 	if (csk->sk_user_data) {
@@ -1457,7 +1501,7 @@ static int kcm_attach_ioctl(struct socket *sock, struct kcm_attach *info)
 
 	return 0;
 out:
-	fput(csock->file);
+	sockfd_put(csock);
 	return err;
 }
 
@@ -1605,7 +1649,7 @@ static int kcm_unattach_ioctl(struct socket *sock, struct kcm_unattach *info)
 	spin_unlock_bh(&mux->lock);
 
 out:
-	fput(csock->file);
+	sockfd_put(csock);
 	return err;
 }
 
@@ -1800,10 +1844,10 @@ static int kcm_release(struct socket *sock)
 	kcm = kcm_sk(sk);
 	mux = kcm->mux;
 
-	lock_sock(sk);
 	sock_orphan(sk);
 	kfree_skb(kcm->seq_skb);
 
+	lock_sock(sk);
 	/* Purge queue under lock to avoid race condition with tx_work trying
 	 * to act when queue is nonempty. If tx_work runs after this point
 	 * it will just return.

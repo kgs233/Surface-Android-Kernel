@@ -1,17 +1,16 @@
 #ifndef __ASM_LINKAGE_H
 #define __ASM_LINKAGE_H
 
+#ifdef __ASSEMBLY__
+#include <asm/assembler.h>
+#endif
+
 #define __ALIGN		.align 2
 #define __ALIGN_STR	".align 2"
 
 #if defined(CONFIG_ARM64_BTI_KERNEL) && defined(__aarch64__)
 
-/*
- * Since current versions of gas reject the BTI instruction unless we
- * set the architecture version to v8.5 we use the hint instruction
- * instead.
- */
-#define BTI_C hint 34 ;
+#define BTI_C bti c ;
 
 /*
  * When using in-kernel BTI we need to ensure that PCS-conformant assembly
@@ -56,8 +55,16 @@
 		SYM_FUNC_START_ALIAS(__pi_##x);	\
 		SYM_FUNC_START_WEAK(x)
 
+#define SYM_FUNC_START_WEAK_ALIAS_PI(x)		\
+		SYM_FUNC_START_ALIAS(__pi_##x);	\
+		SYM_START(x, SYM_L_WEAK, SYM_A_ALIGN)
+
 #define SYM_FUNC_END_PI(x)			\
 		SYM_FUNC_END(x);		\
+		SYM_FUNC_END_ALIAS(__pi_##x)
+
+#define SYM_FUNC_END_ALIAS_PI(x)		\
+		SYM_FUNC_END_ALIAS(x);		\
 		SYM_FUNC_END_ALIAS(__pi_##x)
 
 #endif

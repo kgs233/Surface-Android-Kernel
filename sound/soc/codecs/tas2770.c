@@ -96,7 +96,7 @@ static int tas2770_codec_suspend(struct snd_soc_component *component)
 static int tas2770_codec_resume(struct snd_soc_component *component)
 {
 	struct tas2770_priv *tas2770 = snd_soc_component_get_drvdata(component);
-	int ret = 0;
+	int ret;
 
 	if (tas2770->sdz_gpio) {
 		gpiod_set_value_cansleep(tas2770->sdz_gpio, 1);
@@ -395,13 +395,21 @@ static int tas2770_set_dai_tdm_slot(struct snd_soc_dai *dai,
 	if (tx_mask == 0 || rx_mask != 0)
 		return -EINVAL;
 
-	left_slot = __ffs(tx_mask);
-	tx_mask &= ~(1 << left_slot);
-	if (tx_mask == 0) {
-		right_slot = left_slot;
+	if (slots == 1) {
+		if (tx_mask != 1)
+			return -EINVAL;
+
+		left_slot = 0;
+		right_slot = 0;
 	} else {
-		right_slot = __ffs(tx_mask);
-		tx_mask &= ~(1 << right_slot);
+		left_slot = __ffs(tx_mask);
+		tx_mask &= ~(1 << left_slot);
+		if (tx_mask == 0) {
+			right_slot = left_slot;
+		} else {
+			right_slot = __ffs(tx_mask);
+			tx_mask &= ~(1 << right_slot);
+		}
 	}
 
 	if (tx_mask != 0 || left_slot >= slots || right_slot >= slots)
@@ -448,7 +456,7 @@ static int tas2770_set_dai_tdm_slot(struct snd_soc_dai *dai,
 	return 0;
 }
 
-static struct snd_soc_dai_ops tas2770_dai_ops = {
+static const struct snd_soc_dai_ops tas2770_dai_ops = {
 	.mute_stream = tas2770_mute,
 	.hw_params  = tas2770_hw_params,
 	.set_fmt    = tas2770_set_fmt,
@@ -483,7 +491,7 @@ static struct snd_soc_dai_driver tas2770_dai_driver[] = {
 			.formats    = TAS2770_FORMATS,
 		},
 		.ops = &tas2770_dai_ops,
-		.symmetric_rates = 1,
+		.symmetric_rate = 1,
 	},
 };
 

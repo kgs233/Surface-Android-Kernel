@@ -1,0 +1,24 @@
+--- drivers/media/i2c/ov8865.c
++++ drivers/media/i2c/ov8865.c
+@@ -3085,8 +3085,8 @@ static int ov8865_probe(struct i2c_client *client)
+ 
+ 	/* Runtime PM */
+ 
+-	pm_runtime_enable(sensor->dev);
+ 	pm_runtime_set_suspended(sensor->dev);
++	pm_runtime_enable(sensor->dev);
+ 
+ 	/* V4L2 subdev register */
+ 
+--- drivers/media/i2c/ov8865.c
++++ drivers/media/i2c/ov8865.c
+@@ -3073,7 +3073,9 @@ static int ov8865_probe(struct i2c_client *client)
+ 	if (ret)
+ 		goto error_mutex;
+ 
++	mutex_lock(&sensor->mutex);
+ 	ret = ov8865_state_init(sensor);
++	mutex_unlock(&sensor->mutex);
+ 	if (ret)
+ 		goto error_ctrls;
+ 
