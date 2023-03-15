@@ -20,8 +20,6 @@ enum page_ext_flags {
 	PAGE_EXT_OWNER,
 	PAGE_EXT_OWNER_ALLOCATED,
 #if defined(CONFIG_PAGE_PINNER)
-	/* page refcount was increased by GUP or follow_page(FOLL_GET) */
-	PAGE_EXT_GET,
 	/* page migration failed */
 	PAGE_EXT_PINNER_MIGRATION_FAILED,
 #endif
@@ -50,8 +48,12 @@ static inline void page_ext_init_flatmem(void)
 {
 }
 extern void page_ext_init(void);
+static inline void page_ext_init_flatmem_late(void)
+{
+}
 #else
 extern void page_ext_init_flatmem(void);
+extern void page_ext_init_flatmem_late(void);
 static inline void page_ext_init(void)
 {
 }
@@ -75,6 +77,10 @@ static inline void pgdat_page_ext_init(struct pglist_data *pgdat)
 }
 
 static inline void page_ext_init(void)
+{
+}
+
+static inline void page_ext_init_flatmem_late(void)
 {
 }
 

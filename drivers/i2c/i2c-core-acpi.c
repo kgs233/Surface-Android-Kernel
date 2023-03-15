@@ -69,6 +69,38 @@ bool i2c_acpi_get_i2c_resource(struct acpi_resource *ares,
 }
 EXPORT_SYMBOL_GPL(i2c_acpi_get_i2c_resource);
 
+static int i2c_acpi_resource_count(struct acpi_resource *ares, void *data)
+{
+	struct acpi_resource_i2c_serialbus *sb;
+	int *count = data;
+
+	if (i2c_acpi_get_i2c_resource(ares, &sb))
+		*count = *count + 1;
+
+	return 1;
+}
+
+/**
+ * i2c_acpi_client_count - Count the number of I2cSerialBus resources
+ * @adev:	ACPI device
+ *
+ * Returns the number of I2cSerialBus resources in the ACPI-device's
+ * resource-list; or a negative error code.
+ */
+int i2c_acpi_client_count(struct acpi_device *adev)
+{
+	int ret, count = 0;
+	LIST_HEAD(r);
+
+	ret = acpi_dev_get_resources(adev, &r, i2c_acpi_resource_count, &count);
+	if (ret < 0)
+		return ret;
+
+	acpi_dev_free_resource_list(&r);
+	return count;
+}
+EXPORT_SYMBOL_GPL(i2c_acpi_client_count);
+
 static int i2c_acpi_fill_info(struct acpi_resource *ares, void *data)
 {
 	struct i2c_acpi_lookup *lookup = data;
@@ -112,8 +144,11 @@ static int i2c_acpi_do_lookup(struct acpi_device *adev,
 	struct list_head resource_list;
 	int ret;
 
-	if (acpi_bus_get_status(adev) || !adev->status.present)
+	if (acpi_bus_get_status(adev))
 		return -EINVAL;
+
+	if (!acpi_dev_ready_for_enumeration(adev))
+		return -ENODEV;
 
 	if (acpi_match_device_ids(adev, i2c_acpi_ignored_device_ids) == 0)
 		return -ENODEV;
@@ -225,12 +260,8 @@ static void i2c_acpi_register_device(struct i2c_adapter *adapter,
 	adev->power.flags.ignore_parent = true;
 	acpi_device_set_enumerated(adev);
 
-	if (IS_ERR(i2c_new_client_device(adapter, info))) {
+	if (IS_ERR(i2c_new_client_device(adapter, info)))
 		adev->power.flags.ignore_parent = false;
-		dev_err(&adapter->dev,
-			"failed to add I2C device %s from ACPI\n",
-			dev_name(&adev->dev));
-	}
 }
 
 static acpi_status i2c_acpi_add_device(acpi_handle handle, u32 level,
@@ -263,8 +294,8 @@ static acpi_status i2c_acpi_add_device(acpi_handle handle, u32 level,
  */
 void i2c_acpi_register_devices(struct i2c_adapter *adap)
 {
+	struct acpi_device *adev;
 	acpi_status status;
-	acpi_handle handle;
 
 	if (!has_acpi_companion(&adap->dev))
 		return;
@@ -279,11 +310,11 @@ void i2c_acpi_register_devices(struct i2c_adapter *adap)
 	if (!adap->dev.parent)
 		return;
 
-	handle = ACPI_HANDLE(adap->dev.parent);
-	if (!handle)
+	adev = ACPI_COMPANION(adap->dev.parent);
+	if (!adev)
 		return;
 
-	acpi_walk_dep_device_list(handle);
+	acpi_dev_clear_dependencies(adev);
 }
 
 static const struct acpi_device_id i2c_acpi_force_400khz_device_ids[] = {
@@ -497,22 +528,6 @@ struct i2c_client *i2c_acpi_new_device(struct device *dev, int index,
 	return i2c_new_client_device(adapter, info);
 }
 EXPORT_SYMBOL_GPL(i2c_acpi_new_device);
-
-/**
- * i2c_acpi_dev_name - Construct i2c device name for devs sourced from ACPI
- * @adev:     ACPI device to construct the name for
- *
- * Constructs the name of an i2c device matching the format used by
- * i2c_dev_set_name() to allow users to refer to an i2c device by name even
- * before they have been instantiated.
- * 
- * The caller is responsible for freeing the returned pointer.
- */
-char *i2c_acpi_dev_name(struct acpi_device *adev)
-{
-	return kasprintf(GFP_KERNEL, I2C_DEV_NAME_FORMAT, acpi_dev_name(adev));
-}
-EXPORT_SYMBOL_GPL(i2c_acpi_dev_name);
 
 #ifdef CONFIG_ACPI_I2C_OPREGION
 static int acpi_gsb_i2c_read_bytes(struct i2c_client *client,

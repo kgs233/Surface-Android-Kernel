@@ -1302,15 +1302,12 @@ static int tsi108_open(struct net_device *dev)
 
 	data->rxring = dma_alloc_coherent(&data->pdev->dev, rxring_size,
 					  &data->rxdma, GFP_KERNEL);
-	if (!data->rxring) {
-		free_irq(data->irq_num, dev);
+	if (!data->rxring)
 		return -ENOMEM;
-	}
 
 	data->txring = dma_alloc_coherent(&data->pdev->dev, txring_size,
 					  &data->txdma, GFP_KERNEL);
 	if (!data->txring) {
-		free_irq(data->irq_num, dev);
 		dma_free_coherent(&data->pdev->dev, rxring_size, data->rxring,
 				    data->rxdma);
 		return -ENOMEM;
@@ -1541,7 +1538,7 @@ static const struct net_device_ops tsi108_netdev_ops = {
 	.ndo_start_xmit		= tsi108_send_packet,
 	.ndo_set_rx_mode	= tsi108_set_rx_mode,
 	.ndo_get_stats		= tsi108_get_stats,
-	.ndo_do_ioctl		= tsi108_do_ioctl,
+	.ndo_eth_ioctl		= tsi108_do_ioctl,
 	.ndo_set_mac_address	= tsi108_set_mac,
 	.ndo_validate_addr	= eth_validate_addr,
 };

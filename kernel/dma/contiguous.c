@@ -20,7 +20,7 @@
  *   coders, etc.
  *
  *   Such devices often require big memory buffers (a full HD frame
- *   is, for instance, more then 2 mega pixels large, i.e. more than 6
+ *   is, for instance, more than 2 mega pixels large, i.e. more than 6
  *   MB of memory), which makes mechanisms such as kmalloc() or
  *   alloc_page() ineffective.
  *
@@ -50,7 +50,6 @@
 #include <linux/sizes.h>
 #include <linux/dma-map-ops.h>
 #include <linux/cma.h>
-#include <trace/hooks/mm.h>
 
 #ifdef CONFIG_CMA_SIZE_MBYTES
 #define CMA_SIZE_MBYTES CONFIG_CMA_SIZE_MBYTES
@@ -262,8 +261,7 @@ struct page *dma_alloc_from_contiguous(struct device *dev, size_t count,
 	if (align > CONFIG_CMA_ALIGNMENT)
 		align = CONFIG_CMA_ALIGNMENT;
 
-	return cma_alloc(dev_get_cma_area(dev), count, align, GFP_KERNEL |
-			(no_warn ? __GFP_NOWARN : 0));
+	return cma_alloc(dev_get_cma_area(dev), count, align, no_warn);
 }
 
 /**
@@ -286,8 +284,7 @@ static struct page *cma_alloc_aligned(struct cma *cma, size_t size, gfp_t gfp)
 {
 	unsigned int align = min(get_order(size), CONFIG_CMA_ALIGNMENT);
 
-	return cma_alloc(cma, size >> PAGE_SHIFT, align,
-				GFP_KERNEL | (gfp & __GFP_NOWARN));
+	return cma_alloc(cma, size >> PAGE_SHIFT, align, gfp & __GFP_NOWARN);
 }
 
 /**
@@ -310,19 +307,14 @@ struct page *dma_alloc_contiguous(struct device *dev, size_t size, gfp_t gfp)
 #ifdef CONFIG_DMA_PERNUMA_CMA
 	int nid = dev_to_node(dev);
 #endif
-	bool allow_subpage_alloc = false;
 
 	/* CMA can be used only in the context which permits sleeping */
 	if (!gfpflags_allow_blocking(gfp))
 		return NULL;
 	if (dev->cma_area)
 		return cma_alloc_aligned(dev->cma_area, size, gfp);
-
-	if (size <= PAGE_SIZE) {
-		trace_android_vh_subpage_dma_contig_alloc(&allow_subpage_alloc, dev, &size);
-		if (!allow_subpage_alloc)
-			return NULL;
-	}
+	if (size <= PAGE_SIZE)
+		return NULL;
 
 #ifdef CONFIG_DMA_PERNUMA_CMA
 	if (nid != NUMA_NO_NODE && !(gfp & (GFP_DMA | GFP_DMA32))) {

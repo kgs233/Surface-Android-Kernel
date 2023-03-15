@@ -352,22 +352,11 @@ pmc_usb_mux_usb4(struct pmc_usb_port *port, struct typec_mux_state *state)
 	return pmc_usb_command(port, (void *)&req, sizeof(req));
 }
 
-static int pmc_usb_mux_safe_state(struct pmc_usb_port *port,
-				  struct typec_mux_state *state)
+static int pmc_usb_mux_safe_state(struct pmc_usb_port *port)
 {
 	u8 msg;
 
 	if (IOM_PORT_ACTIVITY_IS(port->iom_status, SAFE_MODE))
-		return 0;
-
-	if ((IOM_PORT_ACTIVITY_IS(port->iom_status, DP) ||
-	     IOM_PORT_ACTIVITY_IS(port->iom_status, DP_MFD)) &&
-	     state->alt && state->alt->svid == USB_TYPEC_DP_SID)
-		return 0;
-
-	if ((IOM_PORT_ACTIVITY_IS(port->iom_status, TBT) ||
-	     IOM_PORT_ACTIVITY_IS(port->iom_status, ALT_MODE_TBT_USB)) &&
-	     state->alt && state->alt->svid == USB_TYPEC_TBT_SID)
 		return 0;
 
 	msg = PMC_USB_SAFE_MODE;
@@ -437,7 +426,7 @@ pmc_usb_mux_set(struct typec_mux *mux, struct typec_mux_state *state)
 		return 0;
 
 	if (state->mode == TYPEC_STATE_SAFE)
-		return pmc_usb_mux_safe_state(port, state);
+		return pmc_usb_mux_safe_state(port);
 	if (state->mode == TYPEC_STATE_USB)
 		return pmc_usb_connect(port, port->role);
 
@@ -616,12 +605,12 @@ static int pmc_usb_probe_iom(struct pmc_usb *pmc)
 	acpi_dev_free_resource_list(&resource_list);
 
 	if (!pmc->iom_base) {
-		put_device(&adev->dev);
+		acpi_dev_put(adev);
 		return -ENOMEM;
 	}
 
 	if (IS_ERR(pmc->iom_base)) {
-		put_device(&adev->dev);
+		acpi_dev_put(adev);
 		return PTR_ERR(pmc->iom_base);
 	}
 
@@ -692,7 +681,7 @@ err_remove_ports:
 		usb_role_switch_unregister(pmc->port[i].usb_sw);
 	}
 
-	put_device(&pmc->iom_adev->dev);
+	acpi_dev_put(pmc->iom_adev);
 
 	return ret;
 }
@@ -708,7 +697,7 @@ static int pmc_usb_remove(struct platform_device *pdev)
 		usb_role_switch_unregister(pmc->port[i].usb_sw);
 	}
 
-	put_device(&pmc->iom_adev->dev);
+	acpi_dev_put(pmc->iom_adev);
 
 	return 0;
 }

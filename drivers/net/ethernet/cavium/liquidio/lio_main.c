@@ -1457,7 +1457,7 @@ static void free_netsgbuf(void *buf)
 	while (frags--) {
 		skb_frag_t *frag = &skb_shinfo(skb)->frags[i - 1];
 
-		pci_unmap_page((lio->oct_dev)->pci_dev,
+		dma_unmap_page(&lio->oct_dev->pci_dev->dev,
 			       g->sg[(i >> 2)].ptr[(i & 3)],
 			       skb_frag_size(frag), DMA_TO_DEVICE);
 		i++;
@@ -1500,7 +1500,7 @@ static void free_netsgbuf_with_resp(void *buf)
 	while (frags--) {
 		skb_frag_t *frag = &skb_shinfo(skb)->frags[i - 1];
 
-		pci_unmap_page((lio->oct_dev)->pci_dev,
+		dma_unmap_page(&lio->oct_dev->pci_dev->dev,
 			       g->sg[(i >> 2)].ptr[(i & 3)],
 			       skb_frag_size(frag), DMA_TO_DEVICE);
 		i++;
@@ -1798,10 +1798,13 @@ static int liquidio_open(struct net_device *netdev)
 
 	ifstate_set(lio, LIO_IFSTATE_RUNNING);
 
-	if (!OCTEON_CN23XX_PF(oct) || !oct->msix_on) {
-		ret = setup_tx_poll_fn(netdev);
-		if (ret)
-			goto err_poll;
+	if (OCTEON_CN23XX_PF(oct)) {
+		if (!oct->msix_on)
+			if (setup_tx_poll_fn(netdev))
+				return -1;
+	} else {
+		if (setup_tx_poll_fn(netdev))
+			return -1;
 	}
 
 	netif_tx_start_all_queues(netdev);
@@ -1814,7 +1817,7 @@ static int liquidio_open(struct net_device *netdev)
 	/* tell Octeon to start forwarding packets to host */
 	ret = send_rx_ctrl_cmd(lio, 1);
 	if (ret)
-		goto err_rx_ctrl;
+		return ret;
 
 	/* start periodical statistics fetch */
 	INIT_DELAYED_WORK(&lio->stats_wk.work, lio_fetch_stats);
@@ -1824,27 +1827,6 @@ static int liquidio_open(struct net_device *netdev)
 
 	dev_info(&oct->pci_dev->dev, "%s interface is opened\n",
 		 netdev->name);
-
-	return 0;
-
-err_rx_ctrl:
-	if (!OCTEON_CN23XX_PF(oct) || !oct->msix_on)
-		cleanup_tx_poll_fn(netdev);
-err_poll:
-	if (lio->ptp_clock) {
-		ptp_clock_unregister(lio->ptp_clock);
-		lio->ptp_clock = NULL;
-	}
-
-	if (oct->props[lio->ifidx].napi_enabled == 1) {
-		list_for_each_entry_safe(napi, n, &netdev->napi_list, dev_list)
-			napi_disable(napi);
-
-		oct->props[lio->ifidx].napi_enabled = 0;
-
-		if (OCTEON_CN23XX_PF(oct))
-			oct->droq[0]->ops.poll_mode = 0;
-	}
 
 	return ret;
 }
@@ -3241,11 +3223,9 @@ static const struct net_device_ops lionetdevops = {
 	.ndo_vlan_rx_add_vid    = liquidio_vlan_rx_add_vid,
 	.ndo_vlan_rx_kill_vid   = liquidio_vlan_rx_kill_vid,
 	.ndo_change_mtu		= liquidio_change_mtu,
-	.ndo_do_ioctl		= liquidio_ioctl,
+	.ndo_eth_ioctl		= liquidio_ioctl,
 	.ndo_fix_features	= liquidio_fix_features,
 	.ndo_set_features	= liquidio_set_features,
-	.ndo_udp_tunnel_add	= udp_tunnel_nic_add_port,
-	.ndo_udp_tunnel_del	= udp_tunnel_nic_del_port,
 	.ndo_set_vf_mac		= liquidio_set_vf_mac,
 	.ndo_set_vf_vlan	= liquidio_set_vf_vlan,
 	.ndo_get_vf_config	= liquidio_get_vf_config,
@@ -3770,7 +3750,8 @@ static int setup_nic_devices(struct octeon_device *octeon_dev)
 	}
 
 	devlink = devlink_alloc(&liquidio_devlink_ops,
-				sizeof(struct lio_devlink_priv));
+				sizeof(struct lio_devlink_priv),
+				&octeon_dev->pci_dev->dev);
 	if (!devlink) {
 		dev_err(&octeon_dev->pci_dev->dev, "devlink alloc failed\n");
 		goto setup_nic_dev_free;
@@ -3779,7 +3760,7 @@ static int setup_nic_devices(struct octeon_device *octeon_dev)
 	lio_devlink = devlink_priv(devlink);
 	lio_devlink->oct = octeon_dev;
 
-	if (devlink_register(devlink, &octeon_dev->pci_dev->dev)) {
+	if (devlink_register(devlink)) {
 		devlink_free(devlink);
 		dev_err(&octeon_dev->pci_dev->dev,
 			"devlink registration failed\n");

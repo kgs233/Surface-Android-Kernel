@@ -11,6 +11,7 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
@@ -35,7 +36,7 @@ struct value_to_name_map {
 };
 
 struct match_chip_info {
-	void *init_func;
+	void (*init_func)(struct brcm_usb_init_params *params);
 	u8 required_regs[BRCM_REGS_MAX + 1];
 	u8 optional_reg;
 };
@@ -282,6 +283,15 @@ static const struct attribute_group brcm_usb_phy_group = {
 	.attrs = brcm_usb_phy_attrs,
 };
 
+static const struct match_chip_info chip_info_4908 = {
+	.init_func = &brcm_usb_dvr_init_4908,
+	.required_regs = {
+		BRCM_REGS_CTRL,
+		BRCM_REGS_XHCI_EC,
+		-1,
+	},
+};
+
 static const struct match_chip_info chip_info_7216 = {
 	.init_func = &brcm_usb_dvr_init_7216,
 	.required_regs = {
@@ -315,6 +325,10 @@ static const struct match_chip_info chip_info_7445 = {
 };
 
 static const struct of_device_id brcm_usb_dt_ids[] = {
+	{
+		.compatible = "brcm,bcm4908-usb-phy",
+		.data = &chip_info_4908,
+	},
 	{
 		.compatible = "brcm,bcm7216-usb-phy",
 		.data = &chip_info_7216,
@@ -457,8 +471,6 @@ static int brcm_usb_phy_probe(struct platform_device *pdev)
 	struct device_node *dn = pdev->dev.of_node;
 	int err;
 	const char *mode;
-	const struct of_device_id *match;
-	void (*dvr_init)(struct brcm_usb_init_params *params);
 	const struct match_chip_info *info;
 	struct regmap *rmap;
 	int x;
@@ -471,10 +483,11 @@ static int brcm_usb_phy_probe(struct platform_device *pdev)
 	priv->ini.family_id = brcmstb_get_family_id();
 	priv->ini.product_id = brcmstb_get_product_id();
 
-	match = of_match_node(brcm_usb_dt_ids, dev->of_node);
-	info = match->data;
-	dvr_init = info->init_func;
-	(*dvr_init)(&priv->ini);
+	info = of_device_get_match_data(&pdev->dev);
+	if (!info)
+		return -ENOENT;
+
+	info->init_func(&priv->ini);
 
 	dev_dbg(dev, "Best mapping table is for %s\n",
 		priv->ini.family_name);

@@ -99,6 +99,7 @@ static int mwifiex_check_ibss_peer_capabilities(struct mwifiex_private *priv,
 			case IEEE80211_VHT_CAP_MAX_MPDU_LENGTH_3895:
 				sta_ptr->max_amsdu =
 					MWIFIEX_TX_DATA_BUF_SIZE_4K;
+				break;
 			default:
 				break;
 			}
@@ -1060,10 +1061,7 @@ int mwifiex_process_sta_event(struct mwifiex_private *priv)
 							adapter->event_skb);
 		break;
 	case EVENT_BT_COEX_WLAN_PARA_CHANGE:
-		if (adapter->ignore_btcoex_events)
-			break;
-
-		dev_dbg(adapter->dev, "EVENT: ignoring BT coex wlan param update \n");
+		dev_dbg(adapter->dev, "EVENT: ignoring BT coex wlan param update\n");
 		break;
 	case EVENT_RXBA_SYNC:
 		dev_dbg(adapter->dev, "EVENT: RXBA_SYNC\n");

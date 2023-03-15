@@ -135,7 +135,7 @@ static ssize_t dbgfs_schemes_read(struct file *file, char __user *buf,
 	char *kbuf;
 	ssize_t len;
 
-	kbuf = kmalloc(count, GFP_KERNEL | __GFP_NOWARN);
+	kbuf = kmalloc(count, GFP_KERNEL);
 	if (!kbuf)
 		return -ENOMEM;
 
@@ -413,6 +413,9 @@ static ssize_t dbgfs_target_ids_write(struct file *file,
 		damon_destroy_target(t);
 	}
 
+	/* remove targets with previously-set primitive */
+	damon_set_targets(ctx, NULL, 0);
+
 	/* Configure the context for the address space type */
 	if (id_is_pid)
 		damon_va_set_primitives(ctx);
@@ -463,7 +466,7 @@ static ssize_t dbgfs_init_regions_read(struct file *file, char __user *buf,
 	char *kbuf;
 	ssize_t len;
 
-	kbuf = kmalloc(count, GFP_KERNEL | __GFP_NOWARN);
+	kbuf = kmalloc(count, GFP_KERNEL);
 	if (!kbuf)
 		return -ENOMEM;
 

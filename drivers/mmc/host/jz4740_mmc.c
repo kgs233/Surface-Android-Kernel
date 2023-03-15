@@ -152,7 +152,6 @@ struct jz4740_mmc_host {
 	enum jz4740_mmc_version version;
 
 	int irq;
-	int card_detect_irq;
 
 	void __iomem *base;
 	struct resource *mem_res;
@@ -599,10 +598,6 @@ static bool jz4740_mmc_read_data(struct jz4740_mmc_host *host,
 			}
 		}
 		data->bytes_xfered += miter->length;
-
-		/* This can go away once MIPS implements
-		 * flush_kernel_dcache_page */
-		flush_dcache_page(miter->page);
 	}
 	sg_miter_stop(miter);
 
@@ -695,7 +690,7 @@ static void jz4740_mmc_send_command(struct jz4740_mmc_host *host,
 			cmdat |= JZ_MMC_CMDAT_WRITE;
 		if (host->use_dma) {
 			/*
-			 * The 4780's MMC controller has integrated DMA ability
+			 * The JZ4780's MMC controller has integrated DMA ability
 			 * in addition to being able to use the external DMA
 			 * controller. It moves DMA control bits to a separate
 			 * register. The DMA_SEL bit chooses the external
@@ -810,6 +805,8 @@ static irqreturn_t jz_mmc_irq_worker(int irq, void *devid)
 				break;
 			}
 		}
+		fallthrough;
+
 	case JZ4740_MMC_STATE_DONE:
 		break;
 	}
@@ -887,7 +884,7 @@ static int jz4740_mmc_set_clock_rate(struct jz4740_mmc_host *host, int rate)
 	writew(div, host->base + JZ_REG_MMC_CLKRT);
 
 	if (real_rate > 25000000) {
-		if (host->version >= JZ_MMC_X1000) {
+		if (host->version >= JZ_MMC_JZ4780) {
 			writel(JZ_MMC_LPM_DRV_RISING_QTR_PHASE_DLY |
 				   JZ_MMC_LPM_SMP_RISING_QTR_OR_HALF_PHASE_DLY |
 				   JZ_MMC_LPM_LOW_POWER_MODE_EN,
@@ -980,6 +977,7 @@ static const struct of_device_id jz4740_mmc_of_match[] = {
 	{ .compatible = "ingenic,jz4740-mmc", .data = (void *) JZ_MMC_JZ4740 },
 	{ .compatible = "ingenic,jz4725b-mmc", .data = (void *)JZ_MMC_JZ4725B },
 	{ .compatible = "ingenic,jz4760-mmc", .data = (void *) JZ_MMC_JZ4760 },
+	{ .compatible = "ingenic,jz4775-mmc", .data = (void *) JZ_MMC_JZ4780 },
 	{ .compatible = "ingenic,jz4780-mmc", .data = (void *) JZ_MMC_JZ4780 },
 	{ .compatible = "ingenic,x1000-mmc", .data = (void *) JZ_MMC_X1000 },
 	{},
@@ -1034,7 +1032,6 @@ static int jz4740_mmc_probe(struct platform_device* pdev)
 	host->base = devm_ioremap_resource(&pdev->dev, host->mem_res);
 	if (IS_ERR(host->base)) {
 		ret = PTR_ERR(host->base);
-		dev_err(&pdev->dev, "Failed to ioremap base memory\n");
 		goto err_free_host;
 	}
 

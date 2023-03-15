@@ -15,7 +15,6 @@
 #include <linux/sys_soc.h>
 
 #include "cqhci.h"
-#include "sdhci-cqhci.h"
 #include "sdhci-pltfm.h"
 
 /* CTL_CFG Registers */
@@ -379,7 +378,7 @@ static void sdhci_am654_reset(struct sdhci_host *host, u8 mask)
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_am654_data *sdhci_am654 = sdhci_pltfm_priv(pltfm_host);
 
-	sdhci_and_cqhci_reset(host, mask);
+	sdhci_reset(host, mask);
 
 	if (sdhci_am654->quirks & SDHCI_AM654_QUIRK_FORCE_CDTEST) {
 		ctrl = sdhci_readb(host, SDHCI_HOST_CONTROL);
@@ -465,7 +464,7 @@ static struct sdhci_ops sdhci_am654_ops = {
 	.set_clock = sdhci_am654_set_clock,
 	.write_b = sdhci_am654_write_b,
 	.irq = sdhci_am654_cqhci_irq,
-	.reset = sdhci_and_cqhci_reset,
+	.reset = sdhci_reset,
 };
 
 static const struct sdhci_pltfm_data sdhci_am654_pdata = {
@@ -495,7 +494,7 @@ static struct sdhci_ops sdhci_j721e_8bit_ops = {
 	.set_clock = sdhci_am654_set_clock,
 	.write_b = sdhci_am654_write_b,
 	.irq = sdhci_am654_cqhci_irq,
-	.reset = sdhci_and_cqhci_reset,
+	.reset = sdhci_reset,
 };
 
 static const struct sdhci_pltfm_data sdhci_j721e_8bit_pdata = {
@@ -557,7 +556,7 @@ static int sdhci_am654_cqe_add_host(struct sdhci_host *host)
 	struct cqhci_host *cq_host;
 	int ret;
 
-	cq_host = devm_kzalloc(host->mmc->parent, sizeof(struct cqhci_host),
+	cq_host = devm_kzalloc(mmc_dev(host->mmc), sizeof(struct cqhci_host),
 			       GFP_KERNEL);
 	if (!cq_host)
 		return -ENOMEM;
@@ -759,6 +758,14 @@ static const struct of_device_id sdhci_am654_of_match[] = {
 		.compatible = "ti,j721e-sdhci-4bit",
 		.data = &sdhci_j721e_4bit_drvdata,
 	},
+	{
+		.compatible = "ti,am64-sdhci-8bit",
+		.data = &sdhci_j721e_8bit_drvdata,
+	},
+	{
+		.compatible = "ti,am64-sdhci-4bit",
+		.data = &sdhci_j721e_4bit_drvdata,
+	},
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, sdhci_am654_of_match);
@@ -803,11 +810,9 @@ static int sdhci_am654_probe(struct platform_device *pdev)
 
 	/* Clocks are enabled using pm_runtime */
 	pm_runtime_enable(dev);
-	ret = pm_runtime_get_sync(dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(dev);
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret)
 		goto pm_runtime_disable;
-	}
 
 	base = devm_platform_ioremap_resource(pdev, 1);
 	if (IS_ERR(base)) {

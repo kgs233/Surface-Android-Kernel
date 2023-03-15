@@ -165,10 +165,7 @@ armv8pmu_events_sysfs_show(struct device *dev,
 }
 
 #define ARMV8_EVENT_ATTR(name, config)						\
-	(&((struct perf_pmu_events_attr) {					\
-		.attr = __ATTR(name, 0444, armv8pmu_events_sysfs_show, NULL),	\
-		.id = config,							\
-	}).attr.attr)
+	PMU_EVENT_ATTR_ID(name, armv8pmu_events_sysfs_show, config)
 
 static struct attribute *armv8_pmuv3_event_attrs[] = {
 	ARMV8_EVENT_ATTR(sw_incr, ARMV8_PMUV3_PERFCTR_SW_INCR),
@@ -280,7 +277,7 @@ armv8pmu_event_attr_is_visible(struct kobject *kobj,
 	return 0;
 }
 
-static struct attribute_group armv8_pmuv3_events_attr_group = {
+static const struct attribute_group armv8_pmuv3_events_attr_group = {
 	.name = "events",
 	.attrs = armv8_pmuv3_event_attrs,
 	.is_visible = armv8pmu_event_attr_is_visible,
@@ -288,6 +285,9 @@ static struct attribute_group armv8_pmuv3_events_attr_group = {
 
 PMU_FORMAT_ATTR(event, "config:0-15");
 PMU_FORMAT_ATTR(long, "config1:0");
+
+static int sysctl_perf_user_access __read_mostly;
+static int sysctl_export_pmu_events __read_mostly;
 
 static inline bool armv8pmu_event_is_64bit(struct perf_event *event)
 {
@@ -300,7 +300,7 @@ static struct attribute *armv8_pmuv3_format_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group armv8_pmuv3_format_attr_group = {
+static const struct attribute_group armv8_pmuv3_format_attr_group = {
 	.name = "format",
 	.attrs = armv8_pmuv3_format_attrs,
 };
@@ -317,12 +317,45 @@ static ssize_t slots_show(struct device *dev, struct device_attribute *attr,
 
 static DEVICE_ATTR_RO(slots);
 
+static ssize_t bus_slots_show(struct device *dev, struct device_attribute *attr,
+			      char *page)
+{
+	struct pmu *pmu = dev_get_drvdata(dev);
+	struct arm_pmu *cpu_pmu = container_of(pmu, struct arm_pmu, pmu);
+	u32 bus_slots = (cpu_pmu->reg_pmmir >> ARMV8_PMU_BUS_SLOTS_SHIFT)
+			& ARMV8_PMU_BUS_SLOTS_MASK;
+
+	return sysfs_emit(page, "0x%08x\n", bus_slots);
+}
+
+static DEVICE_ATTR_RO(bus_slots);
+
+static ssize_t bus_width_show(struct device *dev, struct device_attribute *attr,
+			      char *page)
+{
+	struct pmu *pmu = dev_get_drvdata(dev);
+	struct arm_pmu *cpu_pmu = container_of(pmu, struct arm_pmu, pmu);
+	u32 bus_width = (cpu_pmu->reg_pmmir >> ARMV8_PMU_BUS_WIDTH_SHIFT)
+			& ARMV8_PMU_BUS_WIDTH_MASK;
+	u32 val = 0;
+
+	/* Encoded as Log2(number of bytes), plus one */
+	if (bus_width > 2 && bus_width < 13)
+		val = 1 << (bus_width - 1);
+
+	return sysfs_emit(page, "0x%08x\n", val);
+}
+
+static DEVICE_ATTR_RO(bus_width);
+
 static struct attribute *armv8_pmuv3_caps_attrs[] = {
 	&dev_attr_slots.attr,
+	&dev_attr_bus_slots.attr,
+	&dev_attr_bus_width.attr,
 	NULL,
 };
 
-static struct attribute_group armv8_pmuv3_caps_attr_group = {
+static const struct attribute_group armv8_pmuv3_caps_attr_group = {
 	.name = "caps",
 	.attrs = armv8_pmuv3_caps_attrs,
 };
@@ -470,9 +503,8 @@ static inline u64 armv8pmu_read_evcntr(int idx)
 static inline u64 armv8pmu_read_hw_counter(struct perf_event *event)
 {
 	int idx = event->hw.idx;
-	u64 val = 0;
+	u64 val = armv8pmu_read_evcntr(idx);
 
-	val = armv8pmu_read_evcntr(idx);
 	if (armv8pmu_event_is_chained(event))
 		val = (val << 32) | armv8pmu_read_evcntr(idx - 1);
 	return val;
@@ -520,7 +552,7 @@ static u64 armv8pmu_read_counter(struct perf_event *event)
 {
 	struct hw_perf_event *hwc = &event->hw;
 	int idx = hwc->idx;
-	u64 value = 0;
+	u64 value;
 
 	if (idx == ARMV8_IDX_CYCLE_COUNTER)
 		value = read_sysreg(pmccntr_el0);
@@ -810,7 +842,7 @@ static int armv8pmu_get_single_idx(struct pmu_hw_events *cpuc,
 {
 	int idx;
 
-	for (idx = ARMV8_IDX_COUNTER0; idx < cpu_pmu->num_events; idx ++) {
+	for (idx = ARMV8_IDX_COUNTER0; idx < cpu_pmu->num_events; idx++) {
 		if (!test_and_set_bit(idx, cpuc->used_mask))
 			return idx;
 	}
@@ -924,6 +956,17 @@ static int armv8pmu_filter_match(struct perf_event *event)
 	return evtype != ARMV8_PMUV3_PERFCTR_CHAIN;
 }
 
+static int __init export_pmu_events(char *str)
+{
+	/* Enable exporting of pmu events at early bootup with kernel
+	 * arguments.
+	 */
+	sysctl_export_pmu_events = 1;
+	return 0;
+}
+
+early_param("export_pmu_events", export_pmu_events);
+
 static void armv8pmu_reset(void *info)
 {
 	struct arm_pmu *cpu_pmu = (struct arm_pmu *)info;
@@ -945,6 +988,9 @@ static void armv8pmu_reset(void *info)
 	/* Enable long event counter support where available */
 	if (armv8pmu_has_long_event(cpu_pmu))
 		pmcr |= ARMV8_PMU_PMCR_LP;
+
+	if (sysctl_export_pmu_events)
+		pmcr |= ARMV8_PMU_PMCR_X;
 
 	armv8pmu_pmcr_write(pmcr);
 }
@@ -1026,7 +1072,7 @@ static void __armv8pmu_probe_pmu(void *info)
 	dfr0 = read_sysreg(id_aa64dfr0_el1);
 	pmuver = cpuid_feature_extract_unsigned_field(dfr0,
 			ID_AA64DFR0_PMUVER_SHIFT);
-	if (pmuver == 0xf || pmuver == 0)
+	if (pmuver == ID_AA64DFR0_PMUVER_IMP_DEF || pmuver == 0)
 		return;
 
 	cpu_pmu->pmuver = pmuver;
@@ -1075,6 +1121,36 @@ static int armv8pmu_probe_pmu(struct arm_pmu *cpu_pmu)
 	return probe.present ? 0 : -ENODEV;
 }
 
+static struct ctl_table armv8_pmu_sysctl_table[] = {
+	{
+		.procname       = "perf_user_access",
+		.data		= &sysctl_perf_user_access,
+		.maxlen		= sizeof(unsigned int),
+		.mode           = 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+	{
+		.procname       = "export_pmu_events",
+		.data           = &sysctl_export_pmu_events,
+		.maxlen         = sizeof(unsigned int),
+		.mode           = 0644,
+		.proc_handler   = proc_dointvec_minmax,
+		.extra1         = SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE,
+	},
+	{ }
+};
+
+static void armv8_pmu_register_sysctl_table(void)
+{
+	static u32 tbl_registered = 0;
+
+	if (!cmpxchg_relaxed(&tbl_registered, 0, 1))
+		register_sysctl("kernel", armv8_pmu_sysctl_table);
+}
+
 static int armv8_pmu_init(struct arm_pmu *cpu_pmu, char *name,
 			  int (*map_event)(struct perf_event *event),
 			  const struct attribute_group *events,
@@ -1107,6 +1183,7 @@ static int armv8_pmu_init(struct arm_pmu *cpu_pmu, char *name,
 	cpu_pmu->attr_groups[ARMPMU_ATTR_GROUP_CAPS] = caps ?
 			caps : &armv8_pmuv3_caps_attr_group;
 
+	armv8_pmu_register_sysctl_table();
 	return 0;
 }
 

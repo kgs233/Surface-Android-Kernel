@@ -155,7 +155,6 @@ struct damon_target *damon_new_target(unsigned long id)
 	t->id = id;
 	t->nr_regions = 0;
 	INIT_LIST_HEAD(&t->regions_list);
-	INIT_LIST_HEAD(&t->list);
 
 	return t;
 }
@@ -430,6 +429,15 @@ int damon_start(struct damon_ctx **ctxs, int nr_ctxs)
 	mutex_unlock(&damon_lock);
 
 	return err;
+}
+
+static void kdamond_usleep(unsigned long usecs)
+{
+	/* See Documentation/timers/timers-howto.rst for the thresholds */
+	if (usecs > 20 * USEC_PER_MSEC)
+		schedule_timeout_idle(usecs_to_jiffies(usecs));
+	else
+		usleep_idle_range(usecs, usecs + 1);
 }
 
 /*
@@ -963,15 +971,6 @@ static unsigned long damos_wmark_wait_us(struct damos *scheme)
 		pr_debug("activate a scheme (%d)\n", scheme->action);
 	scheme->wmarks.activated = true;
 	return 0;
-}
-
-static void kdamond_usleep(unsigned long usecs)
-{
-	/* See Documentation/timers/timers-howto.rst for the thresholds */
-	if (usecs > 20 * USEC_PER_MSEC)
-		schedule_timeout_idle(usecs_to_jiffies(usecs));
-	else
-		usleep_idle_range(usecs, usecs + 1);
 }
 
 /* Returns negative error code if it's not activated but should return */

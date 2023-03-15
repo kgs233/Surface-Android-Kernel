@@ -8,9 +8,6 @@
 #ifndef __ASM_PROCESSOR_H
 #define __ASM_PROCESSOR_H
 
-#define KERNEL_DS		UL(-1)
-#define USER_DS			((UL(1) << VA_BITS) - 1)
-
 /*
  * On arm64 systems, unaligned accesses by the CPU are cheap, and so there is
  * no point in shifting all network buffers by 2 bytes just to make some IP
@@ -24,6 +21,7 @@
 
 #define MTE_CTRL_TCF_SYNC		(1UL << 16)
 #define MTE_CTRL_TCF_ASYNC		(1UL << 17)
+#define MTE_CTRL_TCF_ASYMM		(1UL << 18)
 
 #ifndef __ASSEMBLY__
 
@@ -55,6 +53,7 @@
 
 #define DEFAULT_MAP_WINDOW_64	(UL(1) << VA_BITS_MIN)
 #define TASK_SIZE_64		(UL(1) << vabits_actual)
+#define TASK_SIZE_MAX		(UL(1) << VA_BITS)
 
 #ifdef CONFIG_COMPAT
 #if defined(CONFIG_ARM64_64K_PAGES) && defined(CONFIG_KUSER_HELPERS)
@@ -159,7 +158,9 @@ struct thread_struct {
 	struct debug_info	debug;		/* debugging */
 #ifdef CONFIG_ARM64_PTR_AUTH
 	struct ptrauth_keys_user	keys_user;
+#ifdef CONFIG_ARM64_PTR_AUTH_KERNEL
 	struct ptrauth_keys_kernel	keys_kernel;
+#endif
 #endif
 #ifdef CONFIG_ARM64_MTE
 	u64			mte_ctrl;
@@ -339,13 +340,11 @@ long get_tagged_addr_ctrl(struct task_struct *task);
  * of header definitions for the use of task_stack_page.
  */
 
-#define current_top_of_stack()							\
-({										\
-	struct stack_info _info;						\
-	BUG_ON(!on_accessible_stack(current, current_stack_pointer, &_info));	\
-	_info.high;								\
-})
-#define on_thread_stack()	(on_task_stack(current, current_stack_pointer, NULL))
+/*
+ * The top of the current task's task stack
+ */
+#define current_top_of_stack()	((unsigned long)current->stack + THREAD_SIZE)
+#define on_thread_stack()	(on_task_stack(current, current_stack_pointer, 1, NULL))
 
 #endif /* __ASSEMBLY__ */
 #endif /* __ASM_PROCESSOR_H */

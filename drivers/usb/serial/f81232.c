@@ -130,6 +130,9 @@ static u8 const clock_table[] = { F81232_CLK_1_846_MHZ, F81232_CLK_14_77_MHZ,
 
 static int calc_baud_divisor(speed_t baudrate, speed_t clockrate)
 {
+	if (!baudrate)
+		return 0;
+
 	return DIV_ROUND_CLOSEST(clockrate, baudrate);
 }
 
@@ -189,13 +192,9 @@ static int f81232_set_register(struct usb_serial_port *port, u16 reg, u8 val)
 				tmp,
 				sizeof(val),
 				USB_CTRL_SET_TIMEOUT);
-	if (status != sizeof(val)) {
+	if (status < 0) {
 		dev_err(&port->dev, "%s failed status: %d\n", __func__, status);
-
-		if (status < 0)
-			status = usb_translate_errors(status);
-		else
-			status = -EIO;
+		status = usb_translate_errors(status);
 	} else {
 		status = 0;
 	}
@@ -520,14 +519,9 @@ static void f81232_set_baudrate(struct tty_struct *tty,
 	speed_t baud_list[] = { baudrate, old_baudrate, F81232_DEF_BAUDRATE };
 
 	for (i = 0; i < ARRAY_SIZE(baud_list); ++i) {
-		baudrate = baud_list[i];
-		if (baudrate == 0) {
-			tty_encode_baud_rate(tty, 0, 0);
-			return;
-		}
-
-		idx = f81232_find_clk(baudrate);
+		idx = f81232_find_clk(baud_list[i]);
 		if (idx >= 0) {
+			baudrate = baud_list[i];
 			tty_encode_baud_rate(tty, baudrate, baudrate);
 			break;
 		}
@@ -826,17 +820,12 @@ static int f81232_carrier_raised(struct usb_serial_port *port)
 	return 0;
 }
 
-static int f81232_get_serial_info(struct tty_struct *tty,
-		struct serial_struct *ss)
+static void f81232_get_serial(struct tty_struct *tty, struct serial_struct *ss)
 {
 	struct usb_serial_port *port = tty->driver_data;
 	struct f81232_private *priv = usb_get_serial_port_data(port);
 
-	ss->type = PORT_16550A;
-	ss->line = port->minor;
-	ss->port = port->port_number;
 	ss->baud_base = priv->baud_base;
-	return 0;
 }
 
 static void  f81232_interrupt_work(struct work_struct *work)
@@ -888,10 +877,6 @@ static int f81534a_ctrl_set_register(struct usb_interface *intf, u16 reg,
 			status = usb_translate_errors(status);
 			if (status == -EIO)
 				continue;
-		} else if (status != size) {
-			/* Retry on short transfers */
-			status = -EIO;
-			continue;
 		} else {
 			status = 0;
 		}
@@ -963,7 +948,6 @@ static int f81232_port_probe(struct usb_serial_port *port)
 
 	usb_set_serial_port_data(port, priv);
 
-	port->port.drain_delay = 256;
 	priv->port = port;
 
 	return 0;
@@ -1031,7 +1015,7 @@ static struct usb_serial_driver f81232_device = {
 	.close =		f81232_close,
 	.dtr_rts =		f81232_dtr_rts,
 	.carrier_raised =	f81232_carrier_raised,
-	.get_serial =		f81232_get_serial_info,
+	.get_serial =		f81232_get_serial,
 	.break_ctl =		f81232_break_ctl,
 	.set_termios =		f81232_set_termios,
 	.tiocmget =		f81232_tiocmget,
@@ -1056,7 +1040,7 @@ static struct usb_serial_driver f81534a_device = {
 	.close =		f81232_close,
 	.dtr_rts =		f81232_dtr_rts,
 	.carrier_raised =	f81232_carrier_raised,
-	.get_serial =		f81232_get_serial_info,
+	.get_serial =		f81232_get_serial,
 	.break_ctl =		f81232_break_ctl,
 	.set_termios =		f81232_set_termios,
 	.tiocmget =		f81232_tiocmget,

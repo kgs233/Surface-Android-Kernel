@@ -368,7 +368,7 @@ struct inode *nilfs_new_inode(struct inode *dir, umode_t mode)
 	ii->i_bh = bh;
 
 	atomic64_inc(&root->inodes_count);
-	inode_init_owner(inode, dir, mode);
+	inode_init_owner(&init_user_ns, inode, dir, mode);
 	inode->i_ino = ino;
 	inode->i_mtime = inode->i_atime = inode->i_ctime = current_time(inode);
 
@@ -953,14 +953,15 @@ void nilfs_evict_inode(struct inode *inode)
 	 */
 }
 
-int nilfs_setattr(struct dentry *dentry, struct iattr *iattr)
+int nilfs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
+		  struct iattr *iattr)
 {
 	struct nilfs_transaction_info ti;
 	struct inode *inode = d_inode(dentry);
 	struct super_block *sb = inode->i_sb;
 	int err;
 
-	err = setattr_prepare(dentry, iattr);
+	err = setattr_prepare(&init_user_ns, dentry, iattr);
 	if (err)
 		return err;
 
@@ -975,7 +976,7 @@ int nilfs_setattr(struct dentry *dentry, struct iattr *iattr)
 		nilfs_truncate(inode);
 	}
 
-	setattr_copy(inode, iattr);
+	setattr_copy(&init_user_ns, inode, iattr);
 	mark_inode_dirty(inode);
 
 	if (iattr->ia_valid & ATTR_MODE) {
@@ -991,7 +992,8 @@ out_err:
 	return err;
 }
 
-int nilfs_permission(struct inode *inode, int mask)
+int nilfs_permission(struct user_namespace *mnt_userns, struct inode *inode,
+		     int mask)
 {
 	struct nilfs_root *root = NILFS_I(inode)->i_root;
 
@@ -999,7 +1001,7 @@ int nilfs_permission(struct inode *inode, int mask)
 	    root->cno != NILFS_CPTREE_CURRENT_CNO)
 		return -EROFS; /* snapshot is not writable */
 
-	return generic_permission(inode, mask);
+	return generic_permission(&init_user_ns, inode, mask);
 }
 
 int nilfs_load_inode_block(struct inode *inode, struct buffer_head **pbh)

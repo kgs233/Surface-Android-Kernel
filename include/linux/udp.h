@@ -75,6 +75,7 @@ struct udp_sock {
 	 * For encapsulation sockets.
 	 */
 	int (*encap_rcv)(struct sock *sk, struct sk_buff *skb);
+	void (*encap_err_rcv)(struct sock *sk, struct sk_buff *skb, unsigned int udp_offset);
 	int (*encap_err_lookup)(struct sock *sk, struct sk_buff *skb);
 	void (*encap_destroy)(struct sock *sk);
 
@@ -143,6 +144,12 @@ static inline bool udp_unexpected_gso(struct sock *sk, struct sk_buff *skb)
 		return true;
 
 	return false;
+}
+
+static inline void udp_allow_gso(struct sock *sk)
+{
+	udp_sk(sk)->accept_udp_l4 = 1;
+	udp_sk(sk)->accept_udp_fraglist = 1;
 }
 
 #define udp_portaddr_for_each_entry(__sk, list) \

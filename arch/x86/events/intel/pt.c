@@ -364,7 +364,7 @@ static bool pt_event_valid(struct perf_event *event)
 
 	/*
 	 * Setting bit 0 (TraceEn in RTIT_CTL MSR) in the attr.config
-	 * clears the assomption that BranchEn must always be enabled,
+	 * clears the assumption that BranchEn must always be enabled,
 	 * as was the case with the first implementation of PT.
 	 * If this bit is not set, the legacy behavior is preserved
 	 * for compatibility with the older userspace.
@@ -1247,15 +1247,6 @@ static int pt_buffer_try_single(struct pt_buffer *buf, int nr_pages)
 	if (1 << order != nr_pages)
 		goto out;
 
-	/*
-	 * Some processors cannot always support single range for more than
-	 * 4KB - refer errata TGL052, ADL037 and RPL017. Future processors might
-	 * also be affected, so for now rather than trying to keep track of
-	 * which ones, just disable it for all.
-	 */
-	if (nr_pages > 1)
-		goto out;
-
 	buf->single = true;
 	buf->nr_pages = nr_pages;
 	ret = 0;
@@ -1755,7 +1746,7 @@ static __init int pt_init(void)
 	if (!boot_cpu_has(X86_FEATURE_INTEL_PT))
 		return -ENODEV;
 
-	get_online_cpus();
+	cpus_read_lock();
 	for_each_online_cpu(cpu) {
 		u64 ctl;
 
@@ -1763,7 +1754,7 @@ static __init int pt_init(void)
 		if (!ret && (ctl & RTIT_CTL_TRACEEN))
 			prior_warn++;
 	}
-	put_online_cpus();
+	cpus_read_unlock();
 
 	if (prior_warn) {
 		x86_add_exclusive(x86_lbr_exclusive_pt);

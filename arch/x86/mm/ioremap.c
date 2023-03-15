@@ -216,14 +216,8 @@ __ioremap_caller(resource_size_t phys_addr, unsigned long size,
 	 * Mappings have to be page-aligned
 	 */
 	offset = phys_addr & ~PAGE_MASK;
-	phys_addr &= PAGE_MASK;
-	size = PAGE_ALIGN(last_addr+1) - phys_addr;
-
-	/*
-	 * Mask out any bits not part of the actual physical
-	 * address, like memory encryption bits.
-	 */
 	phys_addr &= PHYSICAL_PAGE_MASK;
+	size = PAGE_ALIGN(last_addr+1) - phys_addr;
 
 	retval = memtype_reserve(phys_addr, (u64)phys_addr + size,
 						pcm, &new_pcm);
@@ -488,25 +482,6 @@ void iounmap(volatile void __iomem *addr)
 	kfree(p);
 }
 EXPORT_SYMBOL(iounmap);
-
-int __init arch_ioremap_p4d_supported(void)
-{
-	return 0;
-}
-
-int __init arch_ioremap_pud_supported(void)
-{
-#ifdef CONFIG_X86_64
-	return boot_cpu_has(X86_FEATURE_GBPAGES);
-#else
-	return 0;
-#endif
-}
-
-int __init arch_ioremap_pmd_supported(void)
-{
-	return boot_cpu_has(X86_FEATURE_PSE);
-}
 
 /*
  * Convert a physical pointer to a virtual kernel pointer for /dev/mem

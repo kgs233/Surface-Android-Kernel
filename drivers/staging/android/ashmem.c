@@ -179,6 +179,7 @@ static inline void lru_del(struct ashmem_range *range)
  * @purged:	   Initial purge status (ASMEM_NOT_PURGED or ASHMEM_WAS_PURGED)
  * @start:	   The starting page (inclusive)
  * @end:	   The ending page (inclusive)
+ * @new_range:	   The placeholder for the new range
  *
  * This function is protected by ashmem_mutex.
  */
@@ -450,9 +451,9 @@ static int ashmem_mmap(struct file *file, struct vm_area_struct *vma)
 		vma_set_anonymous(vma);
 	}
 
-	if (vma->vm_file)
-		fput(vma->vm_file);
-	vma->vm_file = asma->file;
+	vma_set_file(vma, asma->file);
+	/* XXX: merge this with the get_file() above if possible */
+	fput(asma->file);
 
 out:
 	mutex_unlock(&ashmem_mutex);
@@ -816,6 +817,7 @@ out_unlock:
 static long ashmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct ashmem_area *asma = file->private_data;
+	unsigned long ino;
 	long ret = -ENOTTY;
 
 	switch (cmd) {
@@ -858,6 +860,23 @@ static long ashmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			ret = ashmem_shrink_count(&ashmem_shrinker, &sc);
 			ashmem_shrink_scan(&ashmem_shrinker, &sc);
 		}
+		break;
+	case ASHMEM_GET_FILE_ID:
+		/* Lock around our check to avoid racing with ashmem_mmap(). */
+		mutex_lock(&ashmem_mutex);
+		if (!asma || !asma->file) {
+			mutex_unlock(&ashmem_mutex);
+			ret = -EINVAL;
+			break;
+		}
+		ino = file_inode(asma->file)->i_ino;
+		mutex_unlock(&ashmem_mutex);
+
+		if (copy_to_user((void __user *)arg, &ino, sizeof(ino))) {
+			ret = -EFAULT;
+			break;
+		}
+		ret = 0;
 		break;
 	}
 
@@ -944,7 +963,7 @@ static int __init ashmem_init(void)
 
 	ashmem_range_cachep = kmem_cache_create("ashmem_range_cache",
 						sizeof(struct ashmem_range),
-						0, 0, NULL);
+						0, SLAB_RECLAIM_ACCOUNT, NULL);
 	if (!ashmem_range_cachep) {
 		pr_err("failed to create slab cache\n");
 		goto out_free1;

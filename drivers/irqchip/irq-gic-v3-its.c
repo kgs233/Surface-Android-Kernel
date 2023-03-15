@@ -19,6 +19,7 @@
 #include <linux/list.h>
 #include <linux/log2.h>
 #include <linux/memblock.h>
+#include <linux/mem_encrypt.h>
 #include <linux/mm.h>
 #include <linux/msi.h>
 #include <linux/of.h>
@@ -27,6 +28,7 @@
 #include <linux/of_pci.h>
 #include <linux/of_platform.h>
 #include <linux/percpu.h>
+#include <linux/set_memory.h>
 #include <linux/slab.h>
 #include <linux/syscore_ops.h>
 
@@ -794,8 +796,13 @@ static struct its_vpe *its_build_vmapp_cmd(struct its_node *its,
 
 	its_encode_alloc(cmd, alloc);
 
-	/* We can only signal PTZ when alloc==1. Why do we have two bits? */
-	its_encode_ptz(cmd, alloc);
+	/*
+	 * GICv4.1 provides a way to get the VLPI state, which needs the vPE
+	 * to be unmapped first, and in this case, we may remap the vPE
+	 * back while the VPT is not empty. So we can't assume that the
+	 * VPT is empty on map. This is why we never advertise PTZ.
+	 */
+	its_encode_ptz(cmd, false);
 	its_encode_vconf_addr(cmd, vconf_addr);
 	its_encode_vmapp_default_db(cmd, desc->its_vmapp_cmd.vpe->vpe_db_lpi);
 
@@ -1492,7 +1499,7 @@ static void its_vlpi_set_doorbell(struct irq_data *d, bool enable)
 	 *
 	 * Ideally, we'd issue a VMAPTI to set the doorbell to its LPI
 	 * value or to 1023, depending on the enable bit. But that
-	 * would be issueing a mapping for an /existing/ DevID+EventID
+	 * would be issuing a mapping for an /existing/ DevID+EventID
 	 * pair, which is UNPREDICTABLE. Instead, let's issue a VMOVI
 	 * to the /same/ vPE, using this opportunity to adjust the
 	 * doorbell. Mouahahahaha. We loves it, Precious.
@@ -1615,7 +1622,7 @@ static int its_select_cpu(struct irq_data *d,
 
 		cpu = cpumask_pick_least_loaded(d, tmpmask);
 	} else {
-		cpumask_copy(tmpmask, aff_mask);
+		cpumask_and(tmpmask, irq_data_get_affinity_mask(d), cpu_online_mask);
 
 		/* If we cannot cross sockets, limit the search to that node */
 		if ((its_dev->its->flags & ITS_FLAGS_WORKAROUND_CAVIUM_23144) &&
@@ -2135,7 +2142,7 @@ static unsigned long *its_lpi_alloc(int nr_irqs, u32 *base, int *nr_ids)
 	if (err)
 		goto out;
 
-	bitmap = kcalloc(BITS_TO_LONGS(nr_irqs), sizeof (long), GFP_ATOMIC);
+	bitmap = bitmap_zalloc(nr_irqs, GFP_ATOMIC);
 	if (!bitmap)
 		goto out;
 
@@ -2151,7 +2158,7 @@ out:
 static void its_lpi_free(unsigned long *bitmap, u32 base, u32 nr_ids)
 {
 	WARN_ON(free_lpi_range(base, nr_ids));
-	kfree(bitmap);
+	bitmap_free(bitmap);
 }
 
 static void gic_reset_prop_table(void *va)
@@ -2161,6 +2168,7 @@ static void gic_reset_prop_table(void *va)
 
 	/* Make sure the GIC will observe the written configuration */
 	gic_flush_dcache_to_poc(va, LPI_PROPBASE_SZ);
+	set_memory_decrypted((unsigned long)va, LPI_PROPBASE_SZ >> PAGE_SHIFT);
 }
 
 static struct page *its_allocate_prop_table(gfp_t gfp_flags)
@@ -2178,8 +2186,10 @@ static struct page *its_allocate_prop_table(gfp_t gfp_flags)
 
 static void its_free_prop_table(struct page *prop_page)
 {
-	free_pages((unsigned long)page_address(prop_page),
-		   get_order(LPI_PROPBASE_SZ));
+	unsigned long va = (unsigned long)page_address(prop_page);
+
+	set_memory_encrypted(va, LPI_PROPBASE_SZ >> PAGE_SHIFT);
+	free_pages(va, get_order(LPI_PROPBASE_SZ));
 }
 
 static bool gic_check_reserved_range(phys_addr_t addr, unsigned long size)
@@ -2372,6 +2382,8 @@ retry_baser:
 		return -ENXIO;
 	}
 
+	set_memory_decrypted((unsigned long)base,
+			     PAGE_ORDER_TO_SIZE(order) >> PAGE_SHIFT);
 	baser->order = order;
 	baser->base = base;
 	baser->psz = psz;
@@ -2507,8 +2519,12 @@ static void its_free_tables(struct its_node *its)
 
 	for (i = 0; i < GITS_BASER_NR_REGS; i++) {
 		if (its->tables[i].base) {
-			free_pages((unsigned long)its->tables[i].base,
-				   its->tables[i].order);
+			unsigned long base = (unsigned long)its->tables[i].base;
+			u32 order = its->tables[i].order;
+			u32 npages = PAGE_ORDER_TO_SIZE(order) >> PAGE_SHIFT;
+
+			set_memory_encrypted(base, npages);
+			free_pages(base, order);
 			its->tables[i].base = NULL;
 		}
 	}
@@ -2929,6 +2945,7 @@ static int its_alloc_collections(struct its_node *its)
 static struct page *its_allocate_pending_table(gfp_t gfp_flags)
 {
 	struct page *pend_page;
+	void *va;
 
 	pend_page = alloc_pages(gfp_flags | __GFP_ZERO,
 				get_order(LPI_PENDBASE_SZ));
@@ -2936,14 +2953,19 @@ static struct page *its_allocate_pending_table(gfp_t gfp_flags)
 		return NULL;
 
 	/* Make sure the GIC will observe the zero-ed page */
-	gic_flush_dcache_to_poc(page_address(pend_page), LPI_PENDBASE_SZ);
+	va = page_address(pend_page);
+	gic_flush_dcache_to_poc(va, LPI_PENDBASE_SZ);
+	set_memory_decrypted((unsigned long)va, LPI_PENDBASE_SZ >> PAGE_SHIFT);
 
 	return pend_page;
 }
 
 static void its_free_pending_table(struct page *pt)
 {
-	free_pages((unsigned long)page_address(pt), get_order(LPI_PENDBASE_SZ));
+	unsigned long va = (unsigned long)page_address(pt);
+
+	set_memory_encrypted(va, LPI_PENDBASE_SZ >> PAGE_SHIFT);
+	free_pages(va, get_order(LPI_PENDBASE_SZ));
 }
 
 /*
@@ -3132,7 +3154,7 @@ static void its_cpu_init_lpis(void)
 
 		/*
 		 * It's possible for CPU to receive VLPIs before it is
-		 * sheduled as a vPE, especially for the first CPU, and the
+		 * scheduled as a vPE, especially for the first CPU, and the
 		 * VLPI with INTID larger than 2^(IDbits+1) will be considered
 		 * as out of range and dropped by GIC.
 		 * So we initialize IDbits to known value to avoid VLPI drop.
@@ -3273,14 +3295,20 @@ static bool its_alloc_table_entry(struct its_node *its,
 
 	/* Allocate memory for 2nd level table */
 	if (!table[idx]) {
+		void *l2addr;
+
 		page = alloc_pages_node(its->numa_node, GFP_KERNEL | __GFP_ZERO,
 					get_order(baser->psz));
 		if (!page)
 			return false;
 
+		l2addr = page_address(page);
+		set_memory_decrypted((unsigned long)l2addr,
+				     baser->psz >> PAGE_SHIFT);
+
 		/* Flush Lvl2 table to PoC if hw doesn't support coherency */
 		if (!(baser->val & GITS_BASER_SHAREABILITY_MASK))
-			gic_flush_dcache_to_poc(page_address(page), baser->psz);
+			gic_flush_dcache_to_poc(l2addr, baser->psz);
 
 		table[idx] = cpu_to_le64(page_to_phys(page) | GITS_BASER_VALID);
 
@@ -3392,7 +3420,7 @@ static struct its_device *its_create_device(struct its_node *its, u32 dev_id,
 	if (!dev || !itt ||  !col_map || (!lpi_map && alloc_lpis)) {
 		kfree(dev);
 		kfree(itt);
-		kfree(lpi_map);
+		bitmap_free(lpi_map);
 		kfree(col_map);
 		return NULL;
 	}
@@ -3496,6 +3524,9 @@ static int its_msi_prepare(struct irq_domain *domain, struct device *dev,
 		err = -ENOMEM;
 		goto out;
 	}
+
+	if (info->flags & MSI_ALLOC_FLAGS_PROXY_DEVICE)
+		its_dev->shared = true;
 
 	pr_debug("ITT %d entries, %d bits\n", nvec, ilog2(nvec));
 out:
@@ -3623,7 +3654,7 @@ static void its_irq_domain_free(struct irq_domain *domain, unsigned int virq,
 
 	/*
 	 * If all interrupts have been freed, start mopping the
-	 * floor. This is conditionned on the device not being shared.
+	 * floor. This is conditioned on the device not being shared.
 	 */
 	if (!its_dev->shared &&
 	    bitmap_empty(its_dev->event_map.lpi_map,
@@ -3818,7 +3849,7 @@ static void its_wait_vpt_parse_complete(void)
 	WARN_ON_ONCE(readq_relaxed_poll_timeout_atomic(vlpi_base + GICR_VPENDBASER,
 						       val,
 						       !(val & GICR_VPENDBASER_Dirty),
-						       10, 500));
+						       1, 500));
 }
 
 static void its_vpe_schedule(struct its_vpe *vpe)
@@ -4201,7 +4232,7 @@ static int its_sgi_set_affinity(struct irq_data *d,
 {
 	/*
 	 * There is no notion of affinity for virtual SGIs, at least
-	 * not on the host (since they can only be targetting a vPE).
+	 * not on the host (since they can only be targeting a vPE).
 	 * Tell the kernel we've done whatever it asked for.
 	 */
 	irq_data_update_effective_affinity(d, mask_val);
@@ -4246,7 +4277,7 @@ static int its_sgi_get_irqchip_state(struct irq_data *d,
 	/*
 	 * Locking galore! We can race against two different events:
 	 *
-	 * - Concurent vPE affinity change: we must make sure it cannot
+	 * - Concurrent vPE affinity change: we must make sure it cannot
 	 *   happen, or we'll talk to the wrong redistributor. This is
 	 *   identical to what happens with vLPIs.
 	 *
@@ -4561,6 +4592,15 @@ static void its_vpe_irq_domain_deactivate(struct irq_domain *domain,
 
 		its_send_vmapp(its, vpe, false);
 	}
+
+	/*
+	 * There may be a direct read to the VPT after unmapping the
+	 * vPE, to guarantee the validity of this, we make the VPT
+	 * memory coherent with the CPU caches here.
+	 */
+	if (find_4_1_its() && !atomic_read(&vpe->vmapp_count))
+		gic_flush_dcache_to_poc(page_address(vpe->vpt_page),
+					LPI_PENDBASE_SZ);
 }
 
 static const struct irq_domain_ops its_vpe_domain_ops = {
@@ -4888,10 +4928,8 @@ static int its_init_vpe_domain(void)
 	entries = roundup_pow_of_two(nr_cpu_ids);
 	vpe_proxy.vpes = kcalloc(entries, sizeof(*vpe_proxy.vpes),
 				 GFP_KERNEL);
-	if (!vpe_proxy.vpes) {
-		pr_err("ITS: Can't allocate GICv4 proxy device array\n");
+	if (!vpe_proxy.vpes)
 		return -ENOMEM;
-	}
 
 	/* Use the last possible DevID */
 	devid = GENMASK(device_ids(its) - 1, 0);
@@ -5038,6 +5076,8 @@ static int __init its_probe_one(struct resource *res,
 	its->fwnode_handle = handle;
 	its->get_msi_base = its_irq_get_msi_base;
 	its->msi_domain_flags = IRQ_DOMAIN_FLAG_MSI_REMAP;
+	set_memory_decrypted((unsigned long)its->cmd_base,
+			     ITS_CMD_QUEUE_SZ >> PAGE_SHIFT);
 
 	its_enable_quirks(its);
 
@@ -5094,6 +5134,8 @@ static int __init its_probe_one(struct resource *res,
 out_free_tables:
 	its_free_tables(its);
 out_free_cmd:
+	set_memory_encrypted((unsigned long)its->cmd_base,
+			     ITS_CMD_QUEUE_SZ >> PAGE_SHIFT);
 	free_pages((unsigned long)its->cmd_base, get_order(ITS_CMD_QUEUE_SZ));
 out_unmap_sgir:
 	if (its->sgir_base)
@@ -5307,10 +5349,8 @@ static void __init acpi_table_parse_srat_its(void)
 
 	its_srat_maps = kmalloc_array(count, sizeof(struct its_srat_map),
 				      GFP_KERNEL);
-	if (!its_srat_maps) {
-		pr_warn("SRAT: Failed to allocate memory for its_srat_maps!\n");
+	if (!its_srat_maps)
 		return;
-	}
 
 	acpi_table_parse_entries(ACPI_SIG_SRAT,
 			sizeof(struct acpi_table_srat),

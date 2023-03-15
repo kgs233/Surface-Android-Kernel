@@ -8,22 +8,18 @@
 #if !defined(_TRACE_HOOK_PM_DOMAIN_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_HOOK_PM_DOMAIN_H
 
-#include <linux/tracepoint.h>
 #include <trace/hooks/vendor_hooks.h>
 
 #ifdef __GENKSYMS__
-struct generic_pm_domain;
-#else
-/* struct generic_pm_domain */
 #include <linux/pm_domain.h>
-#endif /* __GENKSYMS__ */
+#endif
+
+struct generic_pm_domain;
+
 DECLARE_HOOK(android_vh_allow_domain_state,
 	TP_PROTO(struct generic_pm_domain *genpd, uint32_t idx, bool *allow),
 	TP_ARGS(genpd, idx, allow))
 
-/* macro versions of hooks are no longer required */
-
 #endif /* _TRACE_HOOK_PM_DOMAIN_H */
 
 #include <trace/define_trace.h>
-

@@ -447,7 +447,6 @@ static void mwifiex_pcie_remove(struct pci_dev *pdev)
 	struct mwifiex_private *priv;
 	const struct mwifiex_pcie_card_reg *reg;
 	u32 fw_status;
-	int ret;
 
 	card = pci_get_drvdata(pdev);
 
@@ -459,7 +458,7 @@ static void mwifiex_pcie_remove(struct pci_dev *pdev)
 
 	reg = card->pcie.reg;
 	if (reg)
-		ret = mwifiex_read_reg(adapter, reg->fw_status, &fw_status);
+		mwifiex_read_reg(adapter, reg->fw_status, &fw_status);
 	else
 		fw_status = -1;
 
@@ -544,8 +543,8 @@ static void mwifiex_pcie_reset_prepare(struct pci_dev *pdev)
 	clear_bit(MWIFIEX_IFACE_WORK_DEVICE_DUMP, &card->work_flags);
 	clear_bit(MWIFIEX_IFACE_WORK_CARD_RESET, &card->work_flags);
 
-	/* For Surface gen4+ devices, we need to put wifi into D3cold right
-	 * before performing FLR
+	/* On MS Surface gen4+ devices FLR isn't effective to recover from
+	 * hangups, so we power-cycle the card instead.
 	 */
 	if (card->quirks & QUIRK_FW_RST_D3COLD)
 		mwifiex_pcie_reset_d3cold_quirk(pdev);
@@ -597,7 +596,7 @@ static SIMPLE_DEV_PM_OPS(mwifiex_pcie_pm_ops, mwifiex_pcie_suspend,
 #endif
 
 /* PCI Device Driver */
-static struct pci_driver __refdata mwifiex_pcie = {
+static struct pci_driver mwifiex_pcie = {
 	.name     = "mwifiex_pcie",
 	.id_table = mwifiex_ids,
 	.probe    = mwifiex_pcie_probe,
@@ -682,33 +681,21 @@ static int mwifiex_pm_wakeup_card(struct mwifiex_adapter *adapter)
 	 * appears to ignore or miss our wakeup request, so we continue trying
 	 * until we receive an interrupt from the card.
 	 */
-	do {
+	if (read_poll_timeout(mwifiex_write_reg, retval,
+			      READ_ONCE(adapter->int_status) != 0,
+			      500, 500 * N_WAKEUP_TRIES_SHORT_INTERVAL,
+			      false,
+			      adapter, reg->fw_status, FIRMWARE_READY_PCIE)) {
 		if (read_poll_timeout(mwifiex_write_reg, retval,
 				      READ_ONCE(adapter->int_status) != 0,
-				      500, 500 * N_WAKEUP_TRIES_SHORT_INTERVAL,
+				      10000, 10000 * N_WAKEUP_TRIES_LONG_INTERVAL,
 				      false,
 				      adapter, reg->fw_status, FIRMWARE_READY_PCIE)) {
-			if (read_poll_timeout(mwifiex_write_reg, retval,
-					      READ_ONCE(adapter->int_status) != 0,
-					      10000, 10000 * N_WAKEUP_TRIES_LONG_INTERVAL,
-					      false,
-					      adapter, reg->fw_status, FIRMWARE_READY_PCIE)) {
-				mwifiex_dbg(adapter, ERROR,
-					    "Firmware didn't wake up\n");
-				return -EIO;
-			}
-
-			n_tries++;
-
-			if (n_tries <= 15)
-				usleep_range(400, 700);
-			else
-				msleep(10);
+			mwifiex_dbg(adapter, ERROR,
+				    "Firmware didn't wake up\n");
+			return -EIO;
 		}
-	} while (n_tries <= 50 && READ_ONCE(adapter->int_status) == 0);
-
-	mwifiex_dbg(adapter, EVENT,
-		    "event: Tried %d times until firmware woke up\n", n_tries);
+	}
 
 	if (reg->sleep_cookie) {
 		mwifiex_pcie_dev_wakeup_delay(adapter);
@@ -1026,7 +1013,6 @@ static int mwifiex_pcie_create_txbd_ring(struct mwifiex_adapter *adapter)
 {
 	struct pcie_service_card *card = adapter->card;
 	const struct mwifiex_pcie_card_reg *reg = card->pcie.reg;
-	int n_tries = 0;
 
 	/*
 	 * driver maintaines the write pointer and firmware maintaines the read
@@ -3229,7 +3215,6 @@ static void mwifiex_cleanup_pcie(struct mwifiex_adapter *adapter)
 	struct pcie_service_card *card = adapter->card;
 	struct pci_dev *pdev = card->dev;
 	const struct mwifiex_pcie_card_reg *reg = card->pcie.reg;
-	int ret;
 	u32 fw_status;
 
 	/* Perform the cancel_work_sync() only when we're not resetting
@@ -3246,7 +3231,7 @@ static void mwifiex_cleanup_pcie(struct mwifiex_adapter *adapter)
 			    "skipped cancel_work_sync() because we're in card reset failure path\n");
 	}
 
-	ret = mwifiex_read_reg(adapter, reg->fw_status, &fw_status);
+	mwifiex_read_reg(adapter, reg->fw_status, &fw_status);
 	if (fw_status == FIRMWARE_READY_PCIE) {
 		mwifiex_dbg(adapter, INFO,
 			    "Clearing driver ready signature\n");

@@ -1,0 +1,28 @@
+--- drivers/acpi/battery.c
++++ drivers/acpi/battery.c
+@@ -59,6 +59,10 @@ MODULE_PARM_DESC(cache_time, "cache time in milliseconds");
+ 
+ static const struct acpi_device_id battery_device_ids[] = {
+ 	{"PNP0C0A", 0},
++
++	/* Microsoft Surface Go 3 */
++	{"MSHW0146", 0},
++
+ 	{"", 0},
+ };
+ 
+@@ -1155,6 +1159,14 @@ static const struct dmi_system_id bat_dmi_table[] __initconst = {
+ 			DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo MIIX 320-10ICR"),
+ 		},
+ 	},
++	{
++		/* Microsoft Surface Go 3 */
++		.callback = battery_notification_delay_quirk,
++		.matches = {
++			DMI_MATCH(DMI_SYS_VENDOR, "Microsoft Corporation"),
++			DMI_MATCH(DMI_PRODUCT_NAME, "Surface Go 3"),
++		},
++	},
+ 	{},
+ };
+ 

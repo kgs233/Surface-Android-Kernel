@@ -258,7 +258,6 @@ static int greth_init_rings(struct greth_private *greth)
 			if (dma_mapping_error(greth->dev, dma_addr)) {
 				if (netif_msg_ifup(greth))
 					dev_err(greth->dev, "Could not create initial DMA mapping\n");
-				dev_kfree_skb(skb);
 				goto cleanup;
 			}
 			greth->rx_skbuff[i] = skb;
@@ -1450,10 +1449,10 @@ static int greth_of_probe(struct platform_device *ofdev)
 			break;
 	}
 	if (i == 6) {
-		const u8 *addr;
+		u8 addr[ETH_ALEN];
 
-		addr = of_get_mac_address(ofdev->dev.of_node);
-		if (!IS_ERR(addr)) {
+		err = of_get_mac_address(ofdev->dev.of_node, addr);
+		if (!err) {
 			for (i = 0; i < 6; i++)
 				macaddr[i] = (unsigned int) addr[i];
 		} else {

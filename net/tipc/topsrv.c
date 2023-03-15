@@ -176,7 +176,7 @@ static void tipc_conn_close(struct tipc_conn *con)
 	conn_put(con);
 }
 
-static struct tipc_conn *tipc_conn_alloc(struct tipc_topsrv *s, struct socket *sock)
+static struct tipc_conn *tipc_conn_alloc(struct tipc_topsrv *s)
 {
 	struct tipc_conn *con;
 	int ret;
@@ -202,12 +202,10 @@ static struct tipc_conn *tipc_conn_alloc(struct tipc_topsrv *s, struct socket *s
 	}
 	con->conid = ret;
 	s->idr_in_use++;
+	spin_unlock_bh(&s->idr_lock);
 
 	set_bit(CF_CONNECTED, &con->flags);
 	con->server = s;
-	con->sock = sock;
-	conn_get(con);
-	spin_unlock_bh(&s->idr_lock);
 
 	return con;
 }
@@ -469,7 +467,7 @@ static void tipc_topsrv_accept(struct work_struct *work)
 		ret = kernel_accept(lsock, &newsock, O_NONBLOCK);
 		if (ret < 0)
 			return;
-		con = tipc_conn_alloc(srv, newsock);
+		con = tipc_conn_alloc(srv);
 		if (IS_ERR(con)) {
 			ret = PTR_ERR(con);
 			sock_release(newsock);
@@ -481,11 +479,11 @@ static void tipc_topsrv_accept(struct work_struct *work)
 		newsk->sk_data_ready = tipc_conn_data_ready;
 		newsk->sk_write_space = tipc_conn_write_space;
 		newsk->sk_user_data = con;
+		con->sock = newsock;
 		write_unlock_bh(&newsk->sk_callback_lock);
 
 		/* Wake up receive process in case of 'SYN+' message */
 		newsk->sk_data_ready(newsk);
-		conn_put(con);
 	}
 }
 
@@ -528,13 +526,13 @@ static int tipc_topsrv_create_listener(struct tipc_topsrv *srv)
 		goto err;
 
 	saddr.family	                = AF_TIPC;
-	saddr.addrtype		        = TIPC_ADDR_NAMESEQ;
-	saddr.addr.nameseq.type	        = TIPC_TOP_SRV;
+	saddr.addrtype		        = TIPC_SERVICE_RANGE;
+	saddr.addr.nameseq.type	= TIPC_TOP_SRV;
 	saddr.addr.nameseq.lower	= TIPC_TOP_SRV;
 	saddr.addr.nameseq.upper	= TIPC_TOP_SRV;
 	saddr.scope			= TIPC_NODE_SCOPE;
 
-	rc = kernel_bind(lsock, (struct sockaddr *)&saddr, sizeof(saddr));
+	rc = tipc_sk_bind(lsock, (struct sockaddr *)&saddr, sizeof(saddr));
 	if (rc < 0)
 		goto err;
 	rc = kernel_listen(lsock, 0);
@@ -579,17 +577,17 @@ bool tipc_topsrv_kern_subscr(struct net *net, u32 port, u32 type, u32 lower,
 	sub.filter = filter;
 	*(u64 *)&sub.usr_handle = (u64)port;
 
-	con = tipc_conn_alloc(tipc_topsrv(net), NULL);
+	con = tipc_conn_alloc(tipc_topsrv(net));
 	if (IS_ERR(con))
 		return false;
 
 	*conid = con->conid;
+	con->sock = NULL;
 	rc = tipc_conn_rcv_sub(tipc_topsrv(net), con, &sub);
-	if (rc)
-		conn_put(con);
-
+	if (rc >= 0)
+		return true;
 	conn_put(con);
-	return !rc;
+	return false;
 }
 
 void tipc_topsrv_kern_unsubscr(struct net *net, int conid)

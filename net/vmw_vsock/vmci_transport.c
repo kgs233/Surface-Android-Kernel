@@ -75,6 +75,8 @@ static u32 vmci_transport_qp_resumed_sub_id = VMCI_INVALID_ID;
 
 static int PROTOCOL_OVERRIDE = -1;
 
+static struct vsock_transport vmci_transport; /* forward declaration */
+
 /* Helper function to convert from a VMCI error code to a VSock error code. */
 
 static s32 vmci_transport_error_to_vsock_error(s32 vmci_error)
@@ -803,6 +805,11 @@ static void vmci_transport_handle_detach(struct sock *sk)
 	struct vsock_sock *vsk;
 
 	vsk = vsock_sk(sk);
+
+	/* Only handle our own sockets */
+	if (vsk->transport != &vmci_transport)
+		return;
+
 	if (!vmci_handle_is_invalid(vmci_trans(vsk)->qp_handle)) {
 		sock_set_flag(sk, SOCK_DONE);
 
@@ -831,7 +838,7 @@ static void vmci_transport_handle_detach(struct sock *sk)
 
 				sk->sk_state = TCP_CLOSE;
 				sk->sk_err = ECONNRESET;
-				sk->sk_error_report(sk);
+				sk_error_report(sk);
 				return;
 			}
 			sk->sk_state = TCP_CLOSE;
@@ -943,8 +950,6 @@ static int vmci_transport_recv_listen(struct sock *sk,
 	u64 qp_size;
 	bool old_request = false;
 	bool old_pkt_proto = false;
-
-	err = 0;
 
 	/* Because we are in the listen state, we could be receiving a packet
 	 * for ourself or any previous connection requests that we received.
@@ -1250,7 +1255,7 @@ vmci_transport_recv_connecting_server(struct sock *listener,
 	vsock_remove_pending(listener, pending);
 	vsock_enqueue_accept(listener, pending);
 
-	/* Callers of accept() will be be waiting on the listening socket, not
+	/* Callers of accept() will be waiting on the listening socket, not
 	 * the pending socket.
 	 */
 	listener->sk_data_ready(listener);
@@ -1367,7 +1372,7 @@ destroy:
 
 	sk->sk_state = TCP_CLOSE;
 	sk->sk_err = skerr;
-	sk->sk_error_report(sk);
+	sk_error_report(sk);
 	return err;
 }
 

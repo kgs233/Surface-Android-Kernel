@@ -384,7 +384,6 @@ static int sctp_prsctp_prune_unsent(struct sctp_association *asoc,
 {
 	struct sctp_outq *q = &asoc->outqueue;
 	struct sctp_chunk *chk, *temp;
-	struct sctp_stream_out *sout;
 
 	q->sched->unsched_all(&asoc->stream);
 
@@ -399,14 +398,12 @@ static int sctp_prsctp_prune_unsent(struct sctp_association *asoc,
 		sctp_sched_dequeue_common(q, chk);
 		asoc->sent_cnt_removable--;
 		asoc->abandoned_unsent[SCTP_PR_INDEX(PRIO)]++;
+		if (chk->sinfo.sinfo_stream < asoc->stream.outcnt) {
+			struct sctp_stream_out *streamout =
+				SCTP_SO(&asoc->stream, chk->sinfo.sinfo_stream);
 
-		sout = SCTP_SO(&asoc->stream, chk->sinfo.sinfo_stream);
-		sout->ext->abandoned_unsent[SCTP_PR_INDEX(PRIO)]++;
-
-		/* clear out_curr if all frag chunks are pruned */
-		if (asoc->stream.out_curr == sout &&
-		    list_is_last(&chk->frag_list, &chk->msg->chunks))
-			asoc->stream.out_curr = NULL;
+			streamout->ext->abandoned_unsent[SCTP_PR_INDEX(PRIO)]++;
+		}
 
 		msg_len -= chk->skb->truesize + sizeof(struct sctp_chunk);
 		sctp_chunk_free(chk);
@@ -772,7 +769,11 @@ static int sctp_packet_singleton(struct sctp_transport *transport,
 
 	sctp_packet_init(&singleton, transport, sport, dport);
 	sctp_packet_config(&singleton, vtag, 0);
-	sctp_packet_append_chunk(&singleton, chunk);
+	if (sctp_packet_append_chunk(&singleton, chunk) != SCTP_XMIT_OK) {
+		list_del_init(&chunk->list);
+		sctp_chunk_free(chunk);
+		return -ENOMEM;
+	}
 	return sctp_packet_transmit(&singleton, gfp);
 }
 
@@ -910,6 +911,7 @@ static void sctp_outq_flush_ctrl(struct sctp_flush_ctx *ctx)
 				ctx->asoc->base.sk->sk_err = -error;
 				return;
 			}
+			ctx->asoc->stats.octrlchunks++;
 			break;
 
 		case SCTP_CID_ABORT:
@@ -932,8 +934,16 @@ static void sctp_outq_flush_ctrl(struct sctp_flush_ctx *ctx)
 			one_packet = 1;
 			fallthrough;
 
-		case SCTP_CID_SACK:
 		case SCTP_CID_HEARTBEAT:
+			if (chunk->pmtu_probe) {
+				error = sctp_packet_singleton(ctx->transport,
+							      chunk, ctx->gfp);
+				if (!error)
+					ctx->asoc->stats.octrlchunks++;
+				break;
+			}
+			fallthrough;
+		case SCTP_CID_SACK:
 		case SCTP_CID_SHUTDOWN:
 		case SCTP_CID_ECN_ECNE:
 		case SCTP_CID_ASCONF:
@@ -1138,6 +1148,7 @@ static void sctp_outq_flush_data(struct sctp_flush_ctx *ctx,
 
 static void sctp_outq_flush_transports(struct sctp_flush_ctx *ctx)
 {
+	struct sock *sk = ctx->asoc->base.sk;
 	struct list_head *ltransport;
 	struct sctp_packet *packet;
 	struct sctp_transport *t;
@@ -1147,6 +1158,12 @@ static void sctp_outq_flush_transports(struct sctp_flush_ctx *ctx)
 		t = list_entry(ltransport, struct sctp_transport, send_ready);
 		packet = &t->packet;
 		if (!sctp_packet_empty(packet)) {
+			rcu_read_lock();
+			if (t->dst && __sk_dst_get(sk) != t->dst) {
+				dst_hold(t->dst);
+				sk_setup_caps(sk, t->dst);
+			}
+			rcu_read_unlock();
 			error = sctp_packet_transmit(packet, ctx->gfp);
 			if (error < 0)
 				ctx->q->asoc->base.sk->sk_err = -error;

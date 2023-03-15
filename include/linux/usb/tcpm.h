@@ -154,9 +154,9 @@ struct tcpc_dev {
 	int (*enable_auto_vbus_discharge)(struct tcpc_dev *dev, bool enable);
 	int (*set_auto_vbus_discharge_threshold)(struct tcpc_dev *dev, enum typec_pwr_opmode mode,
 						 bool pps_active, u32 requested_vbus_voltage);
-	int (*check_contaminant)(struct tcpc_dev *dev);
 	bool (*is_vbus_vsafe0v)(struct tcpc_dev *dev);
 	void (*set_partner_usb_comm_capable)(struct tcpc_dev *dev, bool enable);
+	int (*check_contaminant)(struct tcpc_dev *dev);
 };
 
 struct tcpm_port;
@@ -179,6 +179,5 @@ void tcpm_pd_transmit_complete(struct tcpm_port *port,
 void tcpm_pd_hard_reset(struct tcpm_port *port);
 void tcpm_tcpc_reset(struct tcpm_port *port);
 bool tcpm_is_debouncing(struct tcpm_port *tcpm);
-bool tcpm_is_toggling(struct tcpm_port *port);
 
 #endif /* __LINUX_USB_TCPM_H */

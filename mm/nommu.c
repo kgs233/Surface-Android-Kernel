@@ -210,16 +210,6 @@ long vread(char *buf, char *addr, unsigned long count)
 	return count;
 }
 
-long vwrite(char *buf, char *addr, unsigned long count)
-{
-	/* Don't allow overflow */
-	if ((unsigned long) addr + count < count)
-		count = -(unsigned long) addr;
-
-	memcpy(addr, buf, count);
-	return count;
-}
-
 /*
  *	vmalloc  -  allocate virtually contiguous memory
  *
@@ -233,7 +223,7 @@ long vwrite(char *buf, char *addr, unsigned long count)
  */
 void *vmalloc(unsigned long size)
 {
-       return __vmalloc(size, GFP_KERNEL | __GFP_HIGHMEM);
+	return __vmalloc(size, GFP_KERNEL);
 }
 EXPORT_SYMBOL(vmalloc);
 
@@ -251,7 +241,7 @@ EXPORT_SYMBOL(vmalloc);
  */
 void *vzalloc(unsigned long size)
 {
-	return __vmalloc(size, GFP_KERNEL | __GFP_HIGHMEM | __GFP_ZERO);
+	return __vmalloc(size, GFP_KERNEL | __GFP_ZERO);
 }
 EXPORT_SYMBOL(vzalloc);
 
@@ -664,39 +654,47 @@ static void delete_vma(struct mm_struct *mm, struct vm_area_struct *vma)
 {
 	if (vma->vm_ops && vma->vm_ops->close)
 		vma->vm_ops->close(vma);
-	if (vma->vm_file)
-		fput(vma->vm_file);
 	put_nommu_region(vma->vm_region);
+	/* fput(vma->vm_file) happens within vm_area_free() */
 	vm_area_free(vma);
 }
 
-/*
- * look up the first VMA in which addr resides, NULL if none
- * - should be called with mm->mmap_lock at least held readlocked
- */
-struct vm_area_struct *find_vma(struct mm_struct *mm, unsigned long addr)
+struct vm_area_struct *find_vma_from_tree(struct mm_struct *mm, unsigned long addr)
 {
 	struct vm_area_struct *vma;
-
-	/* check the cache first */
-	vma = vmacache_find(mm, addr);
-	if (likely(vma))
-		return vma;
 
 	/* trawl the list (there may be multiple mappings in which addr
 	 * resides) */
 	for (vma = mm->mmap; vma; vma = vma->vm_next) {
 		if (vma->vm_start > addr)
 			return NULL;
-		if (vma->vm_end > addr) {
-			vmacache_update(addr, vma);
+		if (vma->vm_end > addr)
 			return vma;
-		}
 	}
 
 	return NULL;
 }
-EXPORT_SYMBOL(find_vma);
+
+/*
+ * look up the first VMA in which addr resides, NULL if none
+ * - should be called with mm->mmap_lock at least held readlocked
+ */
+struct vm_area_struct *__find_vma(struct mm_struct *mm, unsigned long addr)
+{
+	struct vm_area_struct *vma;
+
+	/* Check the cache first. */
+	vma = vmacache_find(mm, addr);
+	if (likely(vma))
+		return vma;
+
+	vma = find_vma_from_tree(mm, addr);
+
+	if (vma)
+		vmacache_update(addr, vma);
+	return vma;
+}
+EXPORT_SYMBOL(__find_vma);
 
 /*
  * find a VMA
@@ -835,9 +833,6 @@ static int validate_mmap_request(struct file *file,
 			if (IS_APPEND(file_inode(file)) &&
 			    (file->f_mode & FMODE_WRITE))
 				return -EACCES;
-
-			if (locks_verify_locked(file))
-				return -EAGAIN;
 
 			if (!(capabilities & NOMMU_MAP_DIRECT))
 				return -ENODEV;
@@ -1267,8 +1262,7 @@ error:
 	if (region->vm_file)
 		fput(region->vm_file);
 	kmem_cache_free(vm_region_jar, region);
-	if (vma->vm_file)
-		fput(vma->vm_file);
+	/* fput(vma->vm_file) happens within vm_area_free() */
 	vm_area_free(vma);
 	return ret;
 
@@ -1305,8 +1299,6 @@ unsigned long ksys_mmap_pgoff(unsigned long addr, unsigned long len,
 		if (!file)
 			goto out;
 	}
-
-	flags &= ~(MAP_EXECUTABLE | MAP_DENYWRITE);
 
 	retval = vm_mmap_pgoff(file, addr, len, prot, flags, pgoff);
 
@@ -1511,7 +1503,6 @@ erase_whole_vma:
 	delete_vma(mm, vma);
 	return 0;
 }
-EXPORT_SYMBOL(do_munmap);
 
 int vm_munmap(unsigned long addr, size_t len)
 {
@@ -1676,16 +1667,8 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 }
 EXPORT_SYMBOL(filemap_map_pages);
 
-#ifdef CONFIG_SPECULATIVE_PAGE_FAULT
-bool filemap_allow_speculation(void)
-{
-	BUG();
-	return false;
-}
-#endif
-
-int __access_remote_vm(struct task_struct *tsk, struct mm_struct *mm,
-		unsigned long addr, void *buf, int len, unsigned int gup_flags)
+int __access_remote_vm(struct mm_struct *mm, unsigned long addr, void *buf,
+		       int len, unsigned int gup_flags)
 {
 	struct vm_area_struct *vma;
 	int write = gup_flags & FOLL_WRITE;
@@ -1731,7 +1714,7 @@ int __access_remote_vm(struct task_struct *tsk, struct mm_struct *mm,
 int access_remote_vm(struct mm_struct *mm, unsigned long addr,
 		void *buf, int len, unsigned int gup_flags)
 {
-	return __access_remote_vm(NULL, mm, addr, buf, len, gup_flags);
+	return __access_remote_vm(mm, addr, buf, len, gup_flags);
 }
 
 /*
@@ -1750,7 +1733,7 @@ int access_process_vm(struct task_struct *tsk, unsigned long addr, void *buf, in
 	if (!mm)
 		return 0;
 
-	len = __access_remote_vm(tsk, mm, addr, buf, len, gup_flags);
+	len = __access_remote_vm(mm, addr, buf, len, gup_flags);
 
 	mmput(mm);
 	return len;

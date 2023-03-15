@@ -9,11 +9,17 @@
 / {
 	model = "Firefly ROC-RK3308-CC board";
 	compatible = "firefly,roc-rk3308-cc", "rockchip,rk3308";
+
+	aliases {
+		mmc0 = &sdmmc;
+		mmc1 = &emmc;
+	};
+
 	chosen {
 		stdout-path = "serial2:1500000n8";
 	};
 
-	ir-receiver {
+	ir_rx {
 		compatible = "gpio-ir-receiver";
 		gpios = <&gpio0 RK_PC0 GPIO_ACTIVE_HIGH>;
 		pinctrl-names = "default";

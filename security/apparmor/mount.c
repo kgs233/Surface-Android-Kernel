@@ -371,7 +371,7 @@ audit:
  * Returns: 0 on success else error
  */
 static int match_mnt(struct aa_profile *profile, const struct path *path,
-		     char *buffer, struct path *devpath, char *devbuffer,
+		     char *buffer, const struct path *devpath, char *devbuffer,
 		     const char *type, unsigned long flags, void *data,
 		     bool binary)
 {
@@ -580,7 +580,7 @@ out:
 	return error;
 }
 
-static int profile_umount(struct aa_profile *profile, struct path *path,
+static int profile_umount(struct aa_profile *profile, const struct path *path,
 			  char *buffer)
 {
 	struct aa_perms perms = { };

@@ -15,6 +15,7 @@
 #include <linux/energy_model.h>
 #include <linux/sched/topology.h>
 #include <linux/slab.h>
+#include <trace/hooks/sched.h>
 
 /*
  * Mutex serializing the registrations of performance domains and letting
@@ -142,7 +143,7 @@ static int em_create_perf_table(struct device *dev, struct em_perf_domain *pd,
 
 		/*
 		 * The power returned by active_state() is expected to be
-		 * positive, in milli-watts and to fit into 16 bits.
+		 * positive and to fit into 16 bits.
 		 */
 		if (!power || power > EM_MAX_POWER) {
 			dev_err(dev, "EM: invalid power: %lu\n",
@@ -279,6 +280,7 @@ int em_dev_register_perf_domain(struct device *dev, unsigned int nr_states,
 {
 	unsigned long cap, prev_cap = 0;
 	int cpu, ret;
+	bool cond = false;
 
 	if (!dev || !nr_states || !cb)
 		return -EINVAL;
@@ -307,6 +309,10 @@ int em_dev_register_perf_domain(struct device *dev, unsigned int nr_states,
 				ret = -EEXIST;
 				goto unlock;
 			}
+
+			trace_android_vh_em_dev_register_pd(&cond);
+			if (cond)
+				continue;
 			/*
 			 * All CPUs of a domain must have the same
 			 * micro-architecture since they all share the same

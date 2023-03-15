@@ -7,6 +7,7 @@
 #include <linux/vmalloc.h>
 #include <linux/kmemleak.h>
 #include <linux/page_owner.h>
+#include <linux/page_pinner.h>
 #include <linux/page_idle.h>
 #include <linux/rcupdate.h>
 /*
@@ -34,7 +35,7 @@
  *
  * The need callback is used to decide whether extended memory allocation is
  * needed or not. Sometimes users want to deactivate some features in this
- * boot and extra memory would be unneccessary. In this case, to avoid
+ * boot and extra memory would be unnecessary. In this case, to avoid
  * allocating huge chunk of memory, each clients represent their need of
  * extra memory through the need callback. If one of the need callbacks
  * returns true, it means that someone needs extra memory so that
@@ -116,6 +117,13 @@ static void __init invoke_init_callbacks(void)
 	}
 }
 
+#ifndef CONFIG_SPARSEMEM
+void __init page_ext_init_flatmem_late(void)
+{
+	invoke_init_callbacks();
+}
+#endif
+
 static inline struct page_ext *get_entry(void *base, unsigned long index)
 {
 	return base + page_ext_size * index;
@@ -166,7 +174,6 @@ void page_ext_put(struct page_ext *page_ext)
 
 #if !defined(CONFIG_SPARSEMEM)
 
-
 void __meminit pgdat_page_ext_init(struct pglist_data *pgdat)
 {
 	pgdat->node_page_ext = NULL;
@@ -192,7 +199,7 @@ struct page_ext *lookup_page_ext(const struct page *page)
 					MAX_ORDER_NR_PAGES);
 	return get_entry(base, index);
 }
-EXPORT_SYMBOL_GPL(lookup_page_ext);
+EXPORT_SYMBOL_NS_GPL(lookup_page_ext, MINIDUMP);
 
 static int __init alloc_node_page_ext(int nid)
 {
@@ -239,7 +246,6 @@ void __init page_ext_init_flatmem(void)
 			goto fail;
 	}
 	pr_info("allocated %ld bytes of page_ext\n", total_usage);
-	invoke_init_callbacks();
 	return;
 
 fail:
@@ -247,7 +253,7 @@ fail:
 	panic("Out of memory");
 }
 
-#else /* CONFIG_FLAT_NODE_MEM_MAP */
+#else /* CONFIG_FLATMEM */
 static bool page_ext_invalid(struct page_ext *page_ext)
 {
 	return !page_ext || (((unsigned long)page_ext & PAGE_EXT_INVALID) == PAGE_EXT_INVALID);
@@ -270,7 +276,7 @@ struct page_ext *lookup_page_ext(const struct page *page)
 		return NULL;
 	return get_entry(page_ext, pfn);
 }
-EXPORT_SYMBOL_GPL(lookup_page_ext);
+EXPORT_SYMBOL_NS_GPL(lookup_page_ext, MINIDUMP);
 
 static void *__meminit alloc_page_ext(size_t size, int nid)
 {
@@ -323,7 +329,7 @@ static int __meminit init_section_page_ext(unsigned long pfn, int nid)
 	total_usage += table_size;
 	return 0;
 }
-#ifdef CONFIG_MEMORY_HOTPLUG
+
 static void free_page_ext(void *addr)
 {
 	if (is_vmalloc_addr(addr)) {
@@ -462,8 +468,6 @@ static int __meminit page_ext_callback(struct notifier_block *self,
 
 	return notifier_from_errno(ret);
 }
-
-#endif
 
 void __init page_ext_init(void)
 {

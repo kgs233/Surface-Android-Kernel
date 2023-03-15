@@ -40,5 +40,5 @@ API Documentation
 
 .. kernel-doc:: include/linux/surface_acpi_notify.h
 
-.. kernel-doc:: drivers/misc/surface_aggregator/clients/surface_acpi_notify.c
+.. kernel-doc:: drivers/platform/surface/surface_acpi_notify.c
     :export:

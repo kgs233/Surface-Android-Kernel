@@ -103,14 +103,6 @@ static void synthesize_set_arg1(kprobe_opcode_t *addr, unsigned long val)
 asm (
 			".pushsection .rodata\n"
 			"optprobe_template_func:\n"
-			".pushsection .discard.func_stack_frame_non_standard\n"
-			"__func_stack_frame_non_standard_optprobe_template_func:\n"
-#ifdef CONFIG_64BIT
-		        ".quad optprobe_template_func\n"
-#else
-			".long optprobe_template_func\n"
-#endif
-			".popsection\n"
 			".global optprobe_template_entry\n"
 			"optprobe_template_entry:\n"
 #ifdef CONFIG_X86_64
@@ -161,6 +153,9 @@ asm (
 			".global optprobe_template_end\n"
 			"optprobe_template_end:\n"
 			".popsection\n");
+
+void optprobe_template_func(void);
+STACK_FRAME_NON_STANDARD(optprobe_template_func);
 
 #define TMPL_CLAC_IDX \
 	((long)optprobe_template_clac - (long)optprobe_template_entry)
@@ -317,6 +312,8 @@ static int can_optimize(unsigned long paddr)
 	addr = paddr - offset;
 	while (addr < paddr - offset + size) { /* Decode until function end */
 		unsigned long recovered_insn;
+		int ret;
+
 		if (search_exception_tables(addr))
 			/*
 			 * Since some fixup code will jumps into this function,
@@ -326,8 +323,11 @@ static int can_optimize(unsigned long paddr)
 		recovered_insn = recover_probed_instruction(buf, addr);
 		if (!recovered_insn)
 			return 0;
-		kernel_insn_init(&insn, (void *)recovered_insn, MAX_INSN_SIZE);
-		insn_get_length(&insn);
+
+		ret = insn_decode_kernel(&insn, (void *)recovered_insn);
+		if (ret < 0)
+			return 0;
+
 		/*
 		 * In the case of detecting unknown breakpoint, this could be
 		 * a padding INT3 between functions. Let's check that all the

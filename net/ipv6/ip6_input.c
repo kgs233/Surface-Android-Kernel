@@ -32,6 +32,7 @@
 
 #include <net/sock.h>
 #include <net/snmp.h>
+#include <net/udp.h>
 
 #include <net/ipv6.h>
 #include <net/protocol.h>
@@ -44,8 +45,6 @@
 #include <net/inet_ecn.h>
 #include <net/dst_metadata.h>
 
-void udp_v6_early_demux(struct sk_buff *);
-void tcp_v6_early_demux(struct sk_buff *);
 static void ip6_rcv_finish_core(struct net *net, struct sock *sk,
 				struct sk_buff *skb)
 {
@@ -346,7 +345,6 @@ void ipv6_list_rcv(struct list_head *head, struct packet_type *pt,
 		ip6_sublist_rcv(&sublist, curr_dev, curr_net);
 }
 
-INDIRECT_CALLABLE_DECLARE(int udpv6_rcv(struct sk_buff *));
 INDIRECT_CALLABLE_DECLARE(int tcp_v6_rcv(struct sk_buff *));
 
 /*

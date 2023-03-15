@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * drivers/power/process.c - Functions for starting/stopping processes on 
+ * drivers/power/process.c - Functions for starting/stopping processes on
  *                           suspend transitions.
  *
  * Originally from swsusp.
@@ -40,6 +40,7 @@ static int try_to_freeze_tasks(bool user_only)
 	unsigned int elapsed_msecs;
 	bool wakeup = false;
 	int sleep_usecs = USEC_PER_MSEC;
+	bool todo_logging_on = false;
 
 	start = ktime_get_boottime();
 
@@ -101,7 +102,8 @@ static int try_to_freeze_tasks(bool user_only)
 		if (wq_busy)
 			show_workqueue_state();
 
-		if (pm_debug_messages_on) {
+		trace_android_vh_try_to_freeze_todo_logging(&todo_logging_on);
+		if (pm_debug_messages_on || todo_logging_on) {
 			read_lock(&tasklist_lock);
 			for_each_process_thread(g, p) {
 				if (p != current && !freezer_should_skip(p)
@@ -244,7 +246,7 @@ void thaw_kernel_threads(void)
 
 	read_lock(&tasklist_lock);
 	for_each_process_thread(g, p) {
-		if (p->flags & (PF_KTHREAD | PF_WQ_WORKER))
+		if (p->flags & PF_KTHREAD)
 			__thaw_task(p);
 	}
 	read_unlock(&tasklist_lock);

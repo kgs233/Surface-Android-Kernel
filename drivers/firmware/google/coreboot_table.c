@@ -44,16 +44,13 @@ static int coreboot_bus_probe(struct device *dev)
 	return ret;
 }
 
-static int coreboot_bus_remove(struct device *dev)
+static void coreboot_bus_remove(struct device *dev)
 {
-	int ret = 0;
 	struct coreboot_device *device = CB_DEV(dev);
 	struct coreboot_driver *driver = CB_DRV(dev->driver);
 
 	if (driver->remove)
-		ret = driver->remove(device);
-
-	return ret;
+		driver->remove(device);
 }
 
 static struct bus_type coreboot_bus_type = {
@@ -152,8 +149,12 @@ static int coreboot_table_probe(struct platform_device *pdev)
 	if (!ptr)
 		return -ENOMEM;
 
-	ret = coreboot_table_populate(dev, ptr);
-
+	ret = bus_register(&coreboot_bus_type);
+	if (!ret) {
+		ret = coreboot_table_populate(dev, ptr);
+		if (ret)
+			bus_unregister(&coreboot_bus_type);
+	}
 	memunmap(ptr);
 
 	return ret;
@@ -168,6 +169,7 @@ static int __cb_dev_unregister(struct device *dev, void *dummy)
 static int coreboot_table_remove(struct platform_device *pdev)
 {
 	bus_for_each_dev(&coreboot_bus_type, NULL, NULL, __cb_dev_unregister);
+	bus_unregister(&coreboot_bus_type);
 	return 0;
 }
 
@@ -197,32 +199,6 @@ static struct platform_driver coreboot_table_driver = {
 		.of_match_table = of_match_ptr(coreboot_of_match),
 	},
 };
-
-static int __init coreboot_table_driver_init(void)
-{
-	int ret;
-
-	ret = bus_register(&coreboot_bus_type);
-	if (ret)
-		return ret;
-
-	ret = platform_driver_register(&coreboot_table_driver);
-	if (ret) {
-		bus_unregister(&coreboot_bus_type);
-		return ret;
-	}
-
-	return 0;
-}
-
-static void __exit coreboot_table_driver_exit(void)
-{
-	platform_driver_unregister(&coreboot_table_driver);
-	bus_unregister(&coreboot_bus_type);
-}
-
-module_init(coreboot_table_driver_init);
-module_exit(coreboot_table_driver_exit);
-
+module_platform_driver(coreboot_table_driver);
 MODULE_AUTHOR("Google, Inc.");
 MODULE_LICENSE("GPL");

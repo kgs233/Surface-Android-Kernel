@@ -535,6 +535,7 @@ static void setup_memac(struct mac_device *mac_dev)
 	| SUPPORTED_Autoneg \
 	| SUPPORTED_Pause \
 	| SUPPORTED_Asym_Pause \
+	| SUPPORTED_FIBRE \
 	| SUPPORTED_MII)
 
 static DEFINE_MUTEX(eth_lock);
@@ -616,7 +617,6 @@ static int mac_probe(struct platform_device *_of_dev)
 	struct platform_device	*of_dev;
 	struct resource		 res;
 	struct mac_priv_s	*priv;
-	const u8		*mac_addr;
 	u32			 val;
 	u8			fman_id;
 	phy_interface_t          phy_if;
@@ -734,11 +734,9 @@ static int mac_probe(struct platform_device *_of_dev)
 	priv->cell_index = (u8)val;
 
 	/* Get the MAC address */
-	mac_addr = of_get_mac_address(mac_node);
-	if (IS_ERR(mac_addr))
+	err = of_get_mac_address(mac_node, mac_dev->addr);
+	if (err)
 		dev_warn(dev, "of_get_mac_address(%pOF) failed\n", mac_node);
-	else
-		ether_addr_copy(mac_dev->addr, mac_addr);
 
 	/* Get the port handles */
 	nph = of_count_phandle_with_args(mac_node, "fsl,fman-ports", NULL);
@@ -864,7 +862,7 @@ static int mac_probe(struct platform_device *_of_dev)
 	if (err < 0)
 		dev_err(dev, "fman_set_mac_active_pause() = %d\n", err);
 
-	if (!IS_ERR(mac_addr))
+	if (!is_zero_ether_addr(mac_dev->addr))
 		dev_info(dev, "FMan MAC address: %pM\n", mac_dev->addr);
 
 	priv->eth_dev = dpaa_eth_add_device(fman_id, mac_dev);
@@ -884,21 +882,12 @@ _return:
 	return err;
 }
 
-static int mac_remove(struct platform_device *pdev)
-{
-	struct mac_device *mac_dev = platform_get_drvdata(pdev);
-
-	platform_device_unregister(mac_dev->priv->eth_dev);
-	return 0;
-}
-
 static struct platform_driver mac_driver = {
 	.driver = {
 		.name		= KBUILD_MODNAME,
 		.of_match_table	= mac_match,
 	},
 	.probe		= mac_probe,
-	.remove		= mac_remove,
 };
 
 builtin_platform_driver(mac_driver);

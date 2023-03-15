@@ -28,65 +28,6 @@
 #include "sched.h"
 #include "pelt.h"
 
-int pelt_load_avg_period = PELT32_LOAD_AVG_PERIOD;
-int pelt_load_avg_max = PELT32_LOAD_AVG_MAX;
-const u32 *pelt_runnable_avg_yN_inv = pelt32_runnable_avg_yN_inv;
-
-int get_pelt_halflife(void)
-{
-	return pelt_load_avg_period;
-}
-EXPORT_SYMBOL_GPL(get_pelt_halflife);
-
-static int __set_pelt_halflife(void *data)
-{
-	int rc = 0;
-	int num = *(int *)data;
-
-	switch (num) {
-	case PELT8_LOAD_AVG_PERIOD:
-		pelt_load_avg_period = PELT8_LOAD_AVG_PERIOD;
-		pelt_load_avg_max = PELT8_LOAD_AVG_MAX;
-		pelt_runnable_avg_yN_inv = pelt8_runnable_avg_yN_inv;
-		pr_info("PELT half life is set to %dms\n", num);
-		break;
-	case PELT32_LOAD_AVG_PERIOD:
-		pelt_load_avg_period = PELT32_LOAD_AVG_PERIOD;
-		pelt_load_avg_max = PELT32_LOAD_AVG_MAX;
-		pelt_runnable_avg_yN_inv = pelt32_runnable_avg_yN_inv;
-		pr_info("PELT half life is set to %dms\n", num);
-		break;
-	default:
-		rc = -EINVAL;
-		pr_err("Failed to set PELT half life to %dms, the current value is %dms\n",
-			num, pelt_load_avg_period);
-	}
-
-	return rc;
-}
-
-int set_pelt_halflife(int num)
-{
-	return stop_machine(__set_pelt_halflife, &num, NULL);
-}
-EXPORT_SYMBOL_GPL(set_pelt_halflife);
-
-static int __init set_pelt(char *str)
-{
-	int rc, num;
-
-	rc = kstrtoint(str, 0, &num);
-	if (rc) {
-		pr_err("%s: kstrtoint failed. rc=%d\n", __func__, rc);
-		return 0;
-	}
-
-	__set_pelt_halflife(&num);
-	return rc;
-}
-
-early_param("pelt", set_pelt);
-
 /*
  * Approximate:
  *   val * y^n,    where y^32 ~= 0.5 (~1 scheduling period)
@@ -113,7 +54,7 @@ static u64 decay_load(u64 val, u64 n)
 		local_n %= LOAD_AVG_PERIOD;
 	}
 
-	val = mul_u64_u32_shr(val, pelt_runnable_avg_yN_inv[local_n], 32);
+	val = mul_u64_u32_shr(val, runnable_avg_yN_inv[local_n], 32);
 	return val;
 }
 
@@ -192,7 +133,7 @@ accumulate_sum(u64 delta, struct sched_avg *sa,
 			 *	runnable = running = 0;
 			 *
 			 * clause from ___update_load_sum(); this results in
-			 * the below usage of @contrib to dissapear entirely,
+			 * the below usage of @contrib to disappear entirely,
 			 * so no point in calculating it.
 			 */
 			contrib = __accumulate_pelt_segments(periods,
@@ -239,8 +180,7 @@ accumulate_sum(u64 delta, struct sched_avg *sa,
  *   load_avg = u_0` + y*(u_0 + u_1*y + u_2*y^2 + ... )
  *            = u_0 + u_1*y + u_2*y^2 + ... [re-labeling u_i --> u_{i+1}]
  */
-static __always_inline int
-___update_load_sum(u64 now, struct sched_avg *sa,
+int ___update_load_sum(u64 now, struct sched_avg *sa,
 		  unsigned long load, unsigned long runnable, int running)
 {
 	u64 delta;
@@ -291,6 +231,7 @@ ___update_load_sum(u64 now, struct sched_avg *sa,
 
 	return 1;
 }
+EXPORT_SYMBOL_GPL(___update_load_sum);
 
 /*
  * When syncing *_avg with *_sum, we must take into account the current
@@ -316,8 +257,7 @@ ___update_load_sum(u64 now, struct sched_avg *sa,
  * the period_contrib of cfs_rq when updating the sched_avg of a sched_entity
  * if it's more convenient.
  */
-static __always_inline void
-___update_load_avg(struct sched_avg *sa, unsigned long load)
+void ___update_load_avg(struct sched_avg *sa, unsigned long load)
 {
 	u32 divider = get_pelt_divider(sa);
 
@@ -328,6 +268,7 @@ ___update_load_avg(struct sched_avg *sa, unsigned long load)
 	sa->runnable_avg = div_u64(sa->runnable_sum, divider);
 	WRITE_ONCE(sa->util_avg, sa->util_sum / divider);
 }
+EXPORT_SYMBOL_GPL(___update_load_avg);
 
 /*
  * sched_entity:
@@ -533,8 +474,6 @@ int update_irq_load_avg(struct rq *rq, u64 running)
 #endif
 
 #include <trace/hooks/sched.h>
-DEFINE_PER_CPU(u64, clock_task_mult);
-
 unsigned int sysctl_sched_pelt_multiplier = 1;
 __read_mostly unsigned int sched_pelt_lshift;
 

@@ -104,10 +104,10 @@ efi_status_t handle_kernel_image(unsigned long *image_addr,
 			status = efi_get_random_bytes(sizeof(phys_seed),
 						      (u8 *)&phys_seed);
 			if (status == EFI_NOT_FOUND) {
-				efi_info("EFI_RNG_PROTOCOL unavailable, KASLR will be disabled\n");
+				efi_info("EFI_RNG_PROTOCOL unavailable\n");
 				efi_nokaslr = true;
 			} else if (status != EFI_SUCCESS) {
-				efi_err("efi_get_random_bytes() failed (0x%lx), KASLR will be disabled\n",
+				efi_err("efi_get_random_bytes() failed (0x%lx)\n",
 					status);
 				efi_nokaslr = true;
 			}
@@ -134,6 +134,8 @@ efi_status_t handle_kernel_image(unsigned long *image_addr,
 		 */
 		status = efi_random_alloc(*reserve_size, min_kimg_align,
 					  reserve_addr, phys_seed);
+		if (status != EFI_SUCCESS)
+			efi_warn("efi_random_alloc() failed: 0x%lx\n", status);
 	} else {
 		status = EFI_OUT_OF_RESOURCES;
 	}

@@ -844,14 +844,15 @@ mwifiex_cmd_802_11_key_material_v1(struct mwifiex_private *priv,
 	}
 
 	if (!enc_key) {
-		memset(&key_material->key_param_set, 0,
-		       (NUM_WEP_KEYS *
-			sizeof(struct mwifiex_ie_type_key_param_set)));
+		struct host_cmd_ds_802_11_key_material_wep *key_material_wep =
+			(struct host_cmd_ds_802_11_key_material_wep *)key_material;
+		memset(key_material_wep->key_param_set, 0,
+		       sizeof(key_material_wep->key_param_set));
 		ret = mwifiex_set_keyparamset_wep(priv,
-						  &key_material->key_param_set,
+						  &key_material_wep->key_param_set[0],
 						  &key_param_len);
 		cmd->size = cpu_to_le16(key_param_len +
-				    sizeof(key_material->action) + S_DS_GEN);
+				    sizeof(key_material_wep->action) + S_DS_GEN);
 		return ret;
 	} else
 		memset(&key_material->key_param_set, 0,
@@ -1789,29 +1790,31 @@ mwifiex_cmd_tdls_oper(struct mwifiex_private *priv,
 		wmm_qos_info->qos_info = 0;
 		config_len += sizeof(struct mwifiex_ie_types_qos_info);
 
-		if (params->ht_capa) {
+		if (params->link_sta_params.ht_capa) {
 			ht_capab = (struct mwifiex_ie_types_htcap *)(pos +
 								    config_len);
 			ht_capab->header.type =
 					    cpu_to_le16(WLAN_EID_HT_CAPABILITY);
 			ht_capab->header.len =
 				   cpu_to_le16(sizeof(struct ieee80211_ht_cap));
-			memcpy(&ht_capab->ht_cap, params->ht_capa,
+			memcpy(&ht_capab->ht_cap, params->link_sta_params.ht_capa,
 			       sizeof(struct ieee80211_ht_cap));
 			config_len += sizeof(struct mwifiex_ie_types_htcap);
 		}
 
-		if (params->supported_rates && params->supported_rates_len) {
+		if (params->link_sta_params.supported_rates &&
+		    params->link_sta_params.supported_rates_len) {
 			tlv_rates = (struct host_cmd_tlv_rates *)(pos +
 								  config_len);
 			tlv_rates->header.type =
 					       cpu_to_le16(WLAN_EID_SUPP_RATES);
 			tlv_rates->header.len =
-				       cpu_to_le16(params->supported_rates_len);
-			memcpy(tlv_rates->rates, params->supported_rates,
-			       params->supported_rates_len);
+				       cpu_to_le16(params->link_sta_params.supported_rates_len);
+			memcpy(tlv_rates->rates,
+			       params->link_sta_params.supported_rates,
+			       params->link_sta_params.supported_rates_len);
 			config_len += sizeof(struct host_cmd_tlv_rates) +
-				      params->supported_rates_len;
+				      params->link_sta_params.supported_rates_len;
 		}
 
 		if (params->ext_capab && params->ext_capab_len) {
@@ -1825,14 +1828,14 @@ mwifiex_cmd_tdls_oper(struct mwifiex_private *priv,
 			config_len += sizeof(struct mwifiex_ie_types_extcap) +
 				      params->ext_capab_len;
 		}
-		if (params->vht_capa) {
+		if (params->link_sta_params.vht_capa) {
 			vht_capab = (struct mwifiex_ie_types_vhtcap *)(pos +
 								    config_len);
 			vht_capab->header.type =
 					   cpu_to_le16(WLAN_EID_VHT_CAPABILITY);
 			vht_capab->header.len =
 				  cpu_to_le16(sizeof(struct ieee80211_vht_cap));
-			memcpy(&vht_capab->vht_cap, params->vht_capa,
+			memcpy(&vht_capab->vht_cap, params->link_sta_params.vht_capa,
 			       sizeof(struct ieee80211_vht_cap));
 			config_len += sizeof(struct mwifiex_ie_types_vhtcap);
 		}

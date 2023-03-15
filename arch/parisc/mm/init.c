@@ -378,8 +378,8 @@ static void __ref map_pages(unsigned long start_vaddr,
 
 #if CONFIG_PGTABLE_LEVELS == 3
 		if (pud_none(*pud)) {
-			pmd = memblock_alloc(PAGE_SIZE << PMD_ORDER,
-					     PAGE_SIZE << PMD_ORDER);
+			pmd = memblock_alloc(PAGE_SIZE << PMD_TABLE_ORDER,
+					     PAGE_SIZE << PMD_TABLE_ORDER);
 			if (!pmd)
 				panic("pmd allocation failed.\n");
 			pud_populate(NULL, pud, pmd);
@@ -571,8 +571,6 @@ void __init mem_init(void)
 	} else
 #endif
 		parisc_vmalloc_start = SET_MAP_OFFSET(MAP_START);
-
-	mem_init_print_info(NULL);
 
 #if 0
 	/*

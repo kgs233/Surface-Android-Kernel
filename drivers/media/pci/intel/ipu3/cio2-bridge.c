@@ -22,6 +22,8 @@
 static const struct cio2_sensor_config cio2_supported_sensors[] = {
 	/* Omnivision OV5693 */
 	CIO2_SENSOR_CONFIG("INT33BE", 0),
+	/* Omnivision OV8865 */
+	CIO2_SENSOR_CONFIG("INT347A", 1, 360000000),
 	/* Omnivision OV2680 */
 	CIO2_SENSOR_CONFIG("OVTI2680", 0),
 };
@@ -120,8 +122,8 @@ static void cio2_bridge_create_fwnode_properties(
 
 	sensor->prop_names = prop_names;
 
-	sensor->local_ref[0].node = &sensor->swnodes[SWNODE_CIO2_ENDPOINT];
-	sensor->remote_ref[0].node = &sensor->swnodes[SWNODE_SENSOR_ENDPOINT];
+	sensor->local_ref[0] = SOFTWARE_NODE_REFERENCE(&sensor->swnodes[SWNODE_CIO2_ENDPOINT]);
+	sensor->remote_ref[0] = SOFTWARE_NODE_REFERENCE(&sensor->swnodes[SWNODE_SENSOR_ENDPOINT]);
 
 	sensor->dev_properties[0] = PROPERTY_ENTRY_U32(
 					sensor->prop_names.clock_frequency,
@@ -146,9 +148,9 @@ static void cio2_bridge_create_fwnode_properties(
 
 	if (cfg->nr_link_freqs > 0)
 		sensor->ep_properties[3] = PROPERTY_ENTRY_U64_ARRAY_LEN(
-						sensor->prop_names.link_frequencies,
-						cfg->link_freqs,
-						cfg->nr_link_freqs);
+			sensor->prop_names.link_frequencies,
+			cfg->link_freqs,
+			cfg->nr_link_freqs);
 
 	sensor->cio2_properties[0] = PROPERTY_ENTRY_U32_ARRAY_LEN(
 					sensor->prop_names.data_lanes,
@@ -223,14 +225,12 @@ static int cio2_bridge_connect_sensor(const struct cio2_sensor_config *cfg,
 			continue;
 
 		if (bridge->n_sensors >= CIO2_NUM_PORTS) {
+			acpi_dev_put(adev);
 			dev_err(&cio2->dev, "Exceeded available CIO2 ports\n");
-			cio2_bridge_unregister_sensors(bridge);
-			ret = -EINVAL;
-			goto err_out;
+			return -EINVAL;
 		}
 
 		sensor = &bridge->sensors[bridge->n_sensors];
-		sensor->adev = adev;
 		strscpy(sensor->name, cfg->hid, sizeof(sensor->name));
 
 		ret = cio2_bridge_read_acpi_buffer(adev, "SSDB",
@@ -257,12 +257,14 @@ static int cio2_bridge_connect_sensor(const struct cio2_sensor_config *cfg,
 		if (ret)
 			goto err_free_pld;
 
-		fwnode = software_node_fwnode(&sensor->swnodes[SWNODE_SENSOR_HID]);
+		fwnode = software_node_fwnode(&sensor->swnodes[
+						      SWNODE_SENSOR_HID]);
 		if (!fwnode) {
 			ret = -ENODEV;
 			goto err_free_swnodes;
 		}
 
+		sensor->adev = acpi_dev_get(adev);
 		adev->fwnode.secondary = fwnode;
 
 		dev_info(&cio2->dev, "Found supported sensor %s\n",
@@ -278,8 +280,7 @@ err_free_swnodes:
 err_free_pld:
 	ACPI_FREE(sensor->pld);
 err_put_adev:
-	acpi_dev_put(sensor->adev);
-err_out:
+	acpi_dev_put(adev);
 	return ret;
 }
 
@@ -290,7 +291,8 @@ static int cio2_bridge_connect_sensors(struct cio2_bridge *bridge,
 	int ret;
 
 	for (i = 0; i < ARRAY_SIZE(cio2_supported_sensors); i++) {
-		const struct cio2_sensor_config *cfg = &cio2_supported_sensors[i];
+		const struct cio2_sensor_config *cfg =
+			&cio2_supported_sensors[i];
 
 		ret = cio2_bridge_connect_sensor(cfg, bridge, cio2);
 		if (ret)
@@ -316,7 +318,8 @@ int cio2_bridge_init(struct pci_dev *cio2)
 	if (!bridge)
 		return -ENOMEM;
 
-	strscpy(bridge->cio2_node_name, CIO2_HID, sizeof(bridge->cio2_node_name));
+	strscpy(bridge->cio2_node_name, CIO2_HID,
+		sizeof(bridge->cio2_node_name));
 	bridge->cio2_hid_node.name = bridge->cio2_node_name;
 
 	ret = software_node_register(&bridge->cio2_hid_node);
