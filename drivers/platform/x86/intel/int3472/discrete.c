@@ -182,7 +182,6 @@ static int skl_int3472_map_gpio_to_clk(struct int3472_discrete_device *int3472,
 		break;
 	}
 
-	acpi_dev_clear_dependencies(adev);
 	return 0;
 }
 
@@ -390,6 +389,7 @@ static int skl_int3472_discrete_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	acpi_dev_clear_dependencies(adev);
 	return 0;
 
 err_put_sensor:
