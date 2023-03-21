@@ -1,0 +1,1 @@
+drivers/platform/surface/surfacebook1_dgpu_switch.o

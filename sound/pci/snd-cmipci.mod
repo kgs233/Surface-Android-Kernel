@@ -1,0 +1,1 @@
+sound/pci/cmipci.o
